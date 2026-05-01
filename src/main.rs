@@ -1276,18 +1276,20 @@ fn main() {
         }
     };
 
-    match result {
+    let exit_code = match &result {
         Ok(value) => {
-            let exit_code = if value
-                .get("dry_run")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-            {
+            if value.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false) {
                 exit_codes::DRY_RUN_OK
             } else {
                 exit_codes::SUCCESS
-            };
+            }
+        }
+        Err(e) => e.exit_code(),
+    };
+    history::append_cmd(&cli_args, cli_session.as_deref(), exit_code as i32);
 
+    match result {
+        Ok(value) => {
             match format {
                 OutputFormat::Json => print_json(&value),
                 OutputFormat::Table => {
@@ -1296,15 +1298,11 @@ fn main() {
                     }
                 }
             }
-
-            history::append_cmd(&cli_args, cli_session.as_deref(), exit_code as i32);
-            std::process::exit(exit_code);
         }
         Err(e) => {
-            history::append_cmd(&cli_args, cli_session.as_deref(), e.exit_code() as i32);
             let cli_error = e.to_cli_error();
             cli_error.print(format);
-            std::process::exit(e.exit_code());
         }
     }
+    std::process::exit(exit_code);
 }

@@ -1392,7 +1392,7 @@ mod history_tests {
         append_skill(id, "car(list(1 2))", true, "1");
         append_skill(id, "nil", false, "");
 
-        let entries = load_skill(id);
+        let entries = load_skill(id, 0);
         assert_eq!(entries.len(), 3, "all three entries must be present");
         assert_eq!(entries[0].skill, "version()");
         assert!(entries[0].ok);
@@ -1409,7 +1409,7 @@ mod history_tests {
 
         append_skill(id, "expr", true, &"x".repeat(1000));
 
-        let entries = load_skill(id);
+        let entries = load_skill(id, 0);
         assert_eq!(entries.len(), 1);
         assert!(
             entries[0].output.len() <= 512,
@@ -1422,7 +1422,7 @@ mod history_tests {
 
     #[test]
     fn load_skill_missing_session_returns_empty() {
-        let entries = load_skill("rt-hist-no-such-session-xyz");
+        let entries = load_skill("rt-hist-no-such-session-xyz", 0);
         assert!(entries.is_empty());
     }
 
@@ -1433,7 +1433,7 @@ mod history_tests {
 
         append_skill(id, "t", true, "t");
 
-        let entries = load_skill(id);
+        let entries = load_skill(id, 0);
         assert!(!entries[0].ts.is_empty(), "timestamp must be populated");
         assert!(
             entries[0].ts.starts_with("20"),

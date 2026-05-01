@@ -241,6 +241,11 @@ impl SessionInfo {
         )
         .is_ok()
     }
+
+    /// Return only sessions whose daemon is currently alive.
+    pub fn list_alive() -> Vec<Self> {
+        Self::list().unwrap_or_default().into_iter().filter(|s| s.is_alive()).collect()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

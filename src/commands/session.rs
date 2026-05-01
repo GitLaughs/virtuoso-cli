@@ -66,11 +66,7 @@ pub fn list(format: OutputFormat) -> Result<Value> {
 }
 
 pub fn current() -> Result<Value> {
-    let live: Vec<_> = SessionInfo::list()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|s| s.is_alive())
-        .collect();
+    let live = SessionInfo::list_alive();
     match live.len() {
         0 => Ok(json!({"status": "success", "session": null, "note": "no live sessions; VB_PORT will be used"})),
         1 => Ok(json!({
@@ -114,36 +110,18 @@ pub fn history(id: &str, only_skill: bool, only_cmd: bool, limit: usize) -> Resu
     let show_cmd = !only_skill;
 
     let skill_entries: Vec<Value> = if show_skill {
-        crate::history::load_skill(id)
+        crate::history::load_skill(id, limit)
             .into_iter()
-            .rev()
-            .take(if limit > 0 { limit } else { usize::MAX })
-            .rev()
-            .map(|e| {
-                serde_json::json!({
-                    "type": "skill",
-                    "ts": e.ts,
-                    "ok": e.ok,
-                    "skill": e.skill,
-                    "output": e.output,
-                })
-            })
+            .map(|e| serde_json::json!({"type":"skill","ts":e.ts,"ok":e.ok,"skill":e.skill,"output":e.output}))
             .collect()
     } else {
         vec![]
     };
 
     let cmd_entries: Vec<Value> = if show_cmd {
-        crate::history::load_cmd(Some(id), if limit > 0 { limit } else { 0 })
+        crate::history::load_cmd(Some(id), limit)
             .into_iter()
-            .map(|e| {
-                serde_json::json!({
-                    "type": "cmd",
-                    "ts": e.ts,
-                    "cmd": e.cmd,
-                    "exit_code": e.exit_code,
-                })
-            })
+            .map(|e| serde_json::json!({"type":"cmd","ts":e.ts,"cmd":e.cmd,"exit_code":e.exit_code}))
             .collect()
     } else {
         vec![]

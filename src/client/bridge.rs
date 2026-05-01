@@ -91,12 +91,7 @@ impl VirtuosoClient {
                     }
                 }
             } else {
-                // No session specified — try auto-discovery, filtering out dead sessions first
-                let live_sessions: Vec<_> = crate::models::SessionInfo::list()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|s| s.is_alive())
-                    .collect();
+                let live_sessions = crate::models::SessionInfo::list_alive();
                 match live_sessions.len() {
                     1 => {
                         let s = &live_sessions[0];
