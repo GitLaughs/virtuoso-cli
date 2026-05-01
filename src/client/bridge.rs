@@ -88,21 +88,26 @@ impl VirtuosoClient {
                 }
             }
         } else {
-            // No session specified — try auto-discovery
-            match crate::models::SessionInfo::list() {
-                Ok(sessions) if sessions.len() == 1 => {
-                    let s = &sessions[0];
+            // No session specified — try auto-discovery, filtering out dead sessions first
+            let live_sessions: Vec<_> = crate::models::SessionInfo::list()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|s| s.is_alive())
+                .collect();
+            match live_sessions.len() {
+                1 => {
+                    let s = &live_sessions[0];
                     tracing::info!("auto-selected session '{}' on port {}", s.id, s.port);
                     s.port
                 }
-                Ok(sessions) if sessions.len() > 1 => {
-                    let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+                n if n > 1 => {
+                    let ids: Vec<&str> = live_sessions.iter().map(|s| s.id.as_str()).collect();
                     return Err(crate::error::VirtuosoError::Config(format!(
                         "multiple Virtuoso sessions active: {}. Use --session <id> to select one.",
                         ids.join(", ")
                     )));
                 }
-                _ => cfg.port, // 0 sessions or list failed → use VB_PORT
+                _ => cfg.port, // 0 live sessions → use VB_PORT
             }
         };
 

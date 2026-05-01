@@ -446,6 +446,62 @@ mod session_info_tests {
         assert!(found1, "first Virtuoso's session must appear in list");
         assert!(found2, "second Virtuoso's session must appear in list");
     }
+
+    #[test]
+    fn stale_session_filtered_in_cleanup() {
+        // Dead session files (port not bound) must be removed by session::cleanup()
+        let dir = SessionInfo::sessions_dir();
+        fs::create_dir_all(&dir).unwrap();
+
+        let id = "rt-test-stale-19999"; // port 19999 should never be bound in CI
+        fs::remove_file(dir.join(format!("{id}.json"))).ok();
+        write_session(&dir, &make_session(id, 19999));
+
+        let result = crate::commands::session::cleanup().unwrap();
+        let removed: Vec<String> = result["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+
+        fs::remove_file(dir.join(format!("{id}.json"))).ok();
+
+        assert!(
+            removed.contains(&id.to_string()),
+            "stale session must appear in cleanup result"
+        );
+    }
+
+    #[test]
+    fn live_session_not_removed_by_cleanup() {
+        // A session whose port is actually bound must survive cleanup()
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let dir = SessionInfo::sessions_dir();
+        fs::create_dir_all(&dir).unwrap();
+
+        let id = format!("rt-test-live-{port}");
+        fs::remove_file(dir.join(format!("{id}.json"))).ok();
+        write_session(&dir, &make_session(&id, port));
+
+        let result = crate::commands::session::cleanup().unwrap();
+        let removed: Vec<String> = result["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+
+        fs::remove_file(dir.join(format!("{id}.json"))).ok();
+        drop(listener);
+
+        assert!(
+            !removed.contains(&id),
+            "live session must not be removed by cleanup"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.17] - 2026-05-01
+
+### Fixed
+- **Stale session auto-cleanup in `from_env()`** — `VirtuosoClient::from_env()` now filters dead sessions (port not open) before raising "multiple sessions active"; previously a crashed Virtuoso's leftover session file would permanently block all commands until manually deleted
+
+### Added
+- **`vcli session current`** — dry-run of session auto-discovery: shows which session would be selected (or "ambiguous" if multiple live sessions exist)
+- **`vcli session cleanup`** — removes session files for daemons that are no longer running; returns JSON with count and list of removed IDs
+- **Stale/live session cleanup tests** — `stale_session_filtered_in_cleanup` and `live_session_not_removed_by_cleanup` cover the cleanup() boundary
+
 ## [0.3.16] - 2026-05-01
 
 ### Fixed

@@ -864,6 +864,12 @@ enum SessionCmd {
         /// Session ID (e.g. eda-meow-1)
         id: String,
     },
+
+    /// Show which session would be auto-selected (dry-run of session discovery)
+    Current,
+
+    /// Remove stale session files for daemons that are no longer running
+    Cleanup,
 }
 
 #[derive(Subcommand)]
@@ -1226,6 +1232,8 @@ fn main() {
         Commands::Session(cmd) => match cmd {
             SessionCmd::List => commands::session::list(format),
             SessionCmd::Show { id } => commands::session::show(&id, format),
+            SessionCmd::Current => commands::session::current(),
+            SessionCmd::Cleanup => commands::session::cleanup(),
         },
         Commands::Window(cmd) => dispatch_window(cmd),
         Commands::Schema { all, noun, verb } => {

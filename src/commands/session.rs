@@ -65,6 +65,50 @@ pub fn list(format: OutputFormat) -> Result<Value> {
     Ok(json!({"status": "success", "count": sessions.len()}))
 }
 
+pub fn current() -> Result<Value> {
+    let live: Vec<_> = SessionInfo::list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| s.is_alive())
+        .collect();
+    match live.len() {
+        0 => Ok(json!({"status": "success", "session": null, "note": "no live sessions; VB_PORT will be used"})),
+        1 => Ok(json!({
+            "status": "success",
+            "session": live[0].id,
+            "port": live[0].port,
+            "auto_selected": true,
+        })),
+        _ => {
+            let ids: Vec<&str> = live.iter().map(|s| s.id.as_str()).collect();
+            Ok(json!({
+                "status": "ambiguous",
+                "sessions": ids,
+                "note": "use --session <id> to select one",
+            }))
+        }
+    }
+}
+
+pub fn cleanup() -> Result<Value> {
+    let all = SessionInfo::list().unwrap_or_default();
+    let dir = SessionInfo::sessions_dir();
+    let mut removed = Vec::new();
+    for s in &all {
+        if !s.is_alive() {
+            let path = dir.join(format!("{}.json", s.id));
+            if std::fs::remove_file(&path).is_ok() {
+                removed.push(s.id.clone());
+            }
+        }
+    }
+    Ok(json!({
+        "status": "success",
+        "removed": removed.len(),
+        "sessions": removed,
+    }))
+}
+
 pub fn show(id: &str, _format: OutputFormat) -> Result<Value> {
     let s = SessionInfo::load(id)
         .map_err(|e| VirtuosoError::NotFound(format!("session '{id}' not found: {e}")))?;
