@@ -339,28 +339,31 @@ mod session_info_tests {
 
     #[test]
     fn session_sorted_by_id() {
-        // Verify list() sorts by id ascending
-        // Write to real sessions dir to test end-to-end sort
-        let dir = dirs::cache_dir()
-            .unwrap()
-            .join("virtuoso_bridge")
-            .join("sessions");
+        // Verify list() sorts by id ascending.
+        // Bind real ports so concurrent cleanup() calls don't delete these sessions.
+        let l1 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let l2 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let p1 = l1.local_addr().unwrap().port();
+        let p2 = l2.local_addr().unwrap().port();
+
+        let dir = SessionInfo::sessions_dir();
         fs::create_dir_all(&dir).unwrap();
 
-        let s1 = make_session("zzz-sort-test-1", 11111);
-        let s2 = make_session("aaa-sort-test-2", 22222);
-        write_session(&dir, &s1);
-        write_session(&dir, &s2);
+        let id1 = format!("zzz-sort-test-{p1}");
+        let id2 = format!("aaa-sort-test-{p2}");
+        write_session(&dir, &make_session(&id1, p1));
+        write_session(&dir, &make_session(&id2, p2));
 
         let sessions = SessionInfo::list().unwrap();
         let ids: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
-        let pos1 = ids.iter().position(|&id| id == "aaa-sort-test-2").unwrap();
-        let pos2 = ids.iter().position(|&id| id == "zzz-sort-test-1").unwrap();
-        assert!(pos1 < pos2, "aaa should come before zzz");
+        let pos1 = ids.iter().position(|&id| id == id2.as_str()).unwrap();
+        let pos2 = ids.iter().position(|&id| id == id1.as_str()).unwrap();
 
-        // Cleanup
-        fs::remove_file(dir.join("zzz-sort-test-1.json")).ok();
-        fs::remove_file(dir.join("aaa-sort-test-2.json")).ok();
+        fs::remove_file(dir.join(format!("{id1}.json"))).ok();
+        fs::remove_file(dir.join(format!("{id2}.json"))).ok();
+        drop((l1, l2));
+
+        assert!(pos1 < pos2, "aaa should come before zzz");
     }
 
     #[test]
@@ -1368,5 +1371,214 @@ mod job_tests {
         if let (Some(a), Some(z)) = (pos_a, pos_z) {
             assert!(a < z, "earlier created job should sort first");
         }
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use crate::history::{append_cmd, append_skill, history_dir, load_cmd, load_skill};
+    use std::fs;
+
+    fn rm_skill(session_id: &str) {
+        let _ = fs::remove_file(history_dir().join(format!("{session_id}.jsonl")));
+    }
+
+    #[test]
+    fn append_and_load_skill_entries() {
+        let id = "rt-hist-skill-basic";
+        rm_skill(id);
+
+        append_skill(id, "version()", true, "IC231");
+        append_skill(id, "car(list(1 2))", true, "1");
+        append_skill(id, "nil", false, "");
+
+        let entries = load_skill(id);
+        assert_eq!(entries.len(), 3, "all three entries must be present");
+        assert_eq!(entries[0].skill, "version()");
+        assert!(entries[0].ok);
+        assert_eq!(entries[2].skill, "nil");
+        assert!(!entries[2].ok);
+
+        rm_skill(id);
+    }
+
+    #[test]
+    fn skill_output_truncated_at_512_chars() {
+        let id = "rt-hist-skill-trunc";
+        rm_skill(id);
+
+        append_skill(id, "expr", true, &"x".repeat(1000));
+
+        let entries = load_skill(id);
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries[0].output.len() <= 512,
+            "output must be truncated to 512 chars, got {}",
+            entries[0].output.len()
+        );
+
+        rm_skill(id);
+    }
+
+    #[test]
+    fn load_skill_missing_session_returns_empty() {
+        let entries = load_skill("rt-hist-no-such-session-xyz");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn skill_entries_have_timestamp() {
+        let id = "rt-hist-skill-ts";
+        rm_skill(id);
+
+        append_skill(id, "t", true, "t");
+
+        let entries = load_skill(id);
+        assert!(!entries[0].ts.is_empty(), "timestamp must be populated");
+        assert!(
+            entries[0].ts.starts_with("20"),
+            "timestamp must be ISO-8601, got: {}",
+            entries[0].ts
+        );
+
+        rm_skill(id);
+    }
+
+    #[test]
+    fn append_and_load_cmd_entries() {
+        // Use a unique session ID so this test's entries are isolated
+        let session_id = "rt-hist-cmd-basic-54321";
+        let args = vec![
+            "vcli".to_string(),
+            "skill".to_string(),
+            "exec".to_string(),
+            "version()".to_string(),
+        ];
+        append_cmd(&args, Some(session_id), 0);
+
+        let entries = load_cmd(Some(session_id), 0);
+        assert!(!entries.is_empty(), "at least one cmd entry must be found");
+        let last = entries.last().unwrap();
+        assert_eq!(last.cmd, args);
+        assert_eq!(last.exit_code, 0);
+        assert_eq!(last.session.as_deref(), Some(session_id));
+    }
+
+    #[test]
+    fn cmd_error_exit_code_recorded() {
+        let session_id = "rt-hist-cmd-err-54321";
+        append_cmd(&["vcli".to_string(), "bad-cmd".to_string()], Some(session_id), 1);
+
+        let entries = load_cmd(Some(session_id), 0);
+        let last = entries.last().unwrap();
+        assert_eq!(last.exit_code, 1, "exit_code 1 must be recorded");
+    }
+
+    #[test]
+    fn load_cmd_session_filter_isolates_entries() {
+        let s1 = "rt-hist-cmd-filter-s1-11111";
+        let s2 = "rt-hist-cmd-filter-s2-22222";
+
+        append_cmd(&["vcli".to_string(), "skill".to_string()], Some(s1), 0);
+        append_cmd(&["vcli".to_string(), "maestro".to_string()], Some(s2), 0);
+
+        let for_s1 = load_cmd(Some(s1), 0);
+        assert!(
+            for_s1.iter().all(|e| e.session.as_deref() == Some(s1)),
+            "filter must return only s1 entries"
+        );
+        assert!(
+            for_s1.iter().any(|e| e.cmd.contains(&"skill".to_string())),
+            "s1 entry with 'skill' arg must be present"
+        );
+
+        let for_s2 = load_cmd(Some(s2), 0);
+        assert!(
+            for_s2.iter().all(|e| e.session.as_deref() == Some(s2)),
+            "filter must return only s2 entries"
+        );
+    }
+
+    #[test]
+    fn load_cmd_limit_caps_result_count() {
+        let session_id = "rt-hist-cmd-limit-33333";
+        for i in 0..10u32 {
+            append_cmd(&["vcli".to_string(), i.to_string()], Some(session_id), 0);
+        }
+
+        let limited = load_cmd(Some(session_id), 3);
+        assert!(
+            limited.len() <= 3,
+            "limit=3 must return ≤3 entries, got {}",
+            limited.len()
+        );
+    }
+
+    #[test]
+    fn load_cmd_limit_zero_returns_all() {
+        let session_id = "rt-hist-cmd-nolimit-44444";
+        for i in 0..5u32 {
+            append_cmd(&["vcli".to_string(), i.to_string()], Some(session_id), 0);
+        }
+
+        let all = load_cmd(Some(session_id), 0);
+        assert!(
+            all.len() >= 5,
+            "limit=0 must return all entries, got {}",
+            all.len()
+        );
+    }
+
+    #[test]
+    fn session_history_command_returns_correct_structure() {
+        let id = "rt-hist-cmd-struct-55555";
+        rm_skill(id);
+
+        append_skill(id, "car(list())", true, "nil");
+        append_skill(id, "t", true, "t");
+
+        let result = crate::commands::session::history(id, false, false, 50).unwrap();
+        assert_eq!(result["status"], "success");
+        assert_eq!(result["session"], id);
+        assert!(result["skill"].is_array());
+        assert!(result["cmd"].is_array());
+
+        let skill_arr = result["skill"].as_array().unwrap();
+        assert_eq!(skill_arr.len(), 2, "two SKILL entries must be returned");
+        assert_eq!(skill_arr[0]["type"], "skill");
+        assert_eq!(skill_arr[0]["skill"], "car(list())");
+
+        rm_skill(id);
+    }
+
+    #[test]
+    fn session_history_skill_only_flag() {
+        let id = "rt-hist-cmd-skillonly-66666";
+        rm_skill(id);
+        append_skill(id, "t", true, "t");
+
+        let result = crate::commands::session::history(id, true, false, 50).unwrap();
+        assert!(result["skill"].as_array().unwrap().len() >= 1);
+        assert_eq!(
+            result["cmd"].as_array().unwrap().len(),
+            0,
+            "--skill flag must return empty cmd list"
+        );
+
+        rm_skill(id);
+    }
+
+    #[test]
+    fn session_history_cmd_only_flag() {
+        let session_id = "rt-hist-cmd-cmdonly-77777";
+        append_cmd(&["vcli".to_string()], Some(session_id), 0);
+
+        let result = crate::commands::session::history(session_id, false, true, 50).unwrap();
+        assert_eq!(
+            result["skill"].as_array().unwrap().len(),
+            0,
+            "--cmd flag must return empty skill list"
+        );
+        assert!(result["cmd"].as_array().unwrap().len() >= 1);
     }
 }

@@ -2,6 +2,16 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+
+static CMD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn cmd_lock() -> std::sync::MutexGuard<'static, ()> {
+    CMD_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("cmd history lock poisoned")
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SkillEntry {
@@ -44,6 +54,7 @@ pub fn append_skill(session_id: &str, skill: &str, ok: bool, output: &str) {
 }
 
 pub fn append_cmd(args: &[String], session: Option<&str>, exit_code: i32) {
+    let _guard = cmd_lock();
     let dir = history_dir();
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("cmd.jsonl");
@@ -71,6 +82,7 @@ pub fn load_skill(session_id: &str) -> Vec<SkillEntry> {
 }
 
 pub fn load_cmd(session_filter: Option<&str>, limit: usize) -> Vec<CmdEntry> {
+    let _guard = cmd_lock();
     let path = history_dir().join("cmd.jsonl");
     let all: Vec<CmdEntry> = std::fs::read_to_string(path)
         .unwrap_or_default()
