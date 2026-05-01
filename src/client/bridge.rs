@@ -27,6 +27,7 @@ pub struct VirtuosoClient {
     pub schematic: SchematicOps,
     pub window: WindowOps,
     cached_version: Cell<Option<VirtuosoVersion>>,
+    pub session_id: Option<String>,
 }
 
 impl VirtuosoClient {
@@ -41,6 +42,7 @@ impl VirtuosoClient {
             schematic: SchematicOps::new(),
             window: WindowOps,
             cached_version: Cell::new(None),
+            session_id: None,
         }
     }
 
@@ -66,50 +68,52 @@ impl VirtuosoClient {
 
         // Session-aware port resolution:
         // 1. --session / VB_SESSION → load port from session file
-        // 2. No session specified → auto-select if exactly one session exists
+        // 2. No session specified → auto-select if exactly one live session exists
         // 3. Fallback to VB_PORT / config.port for backward compat
-        let port = if let Some(base_port) = tunnel.as_ref().and_then(|t| t.saved_port()) {
-            base_port
-        } else if let Ok(session_id) = std::env::var("VB_SESSION") {
-            // VB_SESSION may be a Maestro session name (e.g. "fnxSession8") rather than
-            // a bridge session ID — Maestro sessions don't have session files.
-            // Fall back to VB_PORT in that case.
-            match crate::models::SessionInfo::load(&session_id) {
-                Ok(s) => {
-                    tracing::info!("connecting to session '{}' on port {}", s.id, s.port);
-                    s.port
+        let (port, resolved_session_id) =
+            if let Some(base_port) = tunnel.as_ref().and_then(|t| t.saved_port()) {
+                (base_port, None)
+            } else if let Ok(session_id) = std::env::var("VB_SESSION") {
+                // VB_SESSION may be a Maestro session name (e.g. "fnxSession8") rather than
+                // a bridge session ID — Maestro sessions don't have session files.
+                // Fall back to VB_PORT in that case.
+                match crate::models::SessionInfo::load(&session_id) {
+                    Ok(s) => {
+                        tracing::info!("connecting to session '{}' on port {}", s.id, s.port);
+                        (s.port, Some(s.id))
+                    }
+                    Err(_) => {
+                        tracing::debug!(
+                            "session '{}' not a bridge session (no file), using VB_PORT",
+                            session_id
+                        );
+                        (cfg.port, None)
+                    }
                 }
-                Err(_) => {
-                    tracing::debug!(
-                        "session '{}' not a bridge session (no file), using VB_PORT",
-                        session_id
-                    );
-                    cfg.port
+            } else {
+                // No session specified — try auto-discovery, filtering out dead sessions first
+                let live_sessions: Vec<_> = crate::models::SessionInfo::list()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|s| s.is_alive())
+                    .collect();
+                match live_sessions.len() {
+                    1 => {
+                        let s = &live_sessions[0];
+                        tracing::info!("auto-selected session '{}' on port {}", s.id, s.port);
+                        (s.port, Some(s.id.clone()))
+                    }
+                    n if n > 1 => {
+                        let ids: Vec<&str> =
+                            live_sessions.iter().map(|s| s.id.as_str()).collect();
+                        return Err(crate::error::VirtuosoError::Config(format!(
+                            "multiple Virtuoso sessions active: {}. Use --session <id> to select one.",
+                            ids.join(", ")
+                        )));
+                    }
+                    _ => (cfg.port, None), // 0 live sessions → use VB_PORT
                 }
-            }
-        } else {
-            // No session specified — try auto-discovery, filtering out dead sessions first
-            let live_sessions: Vec<_> = crate::models::SessionInfo::list()
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|s| s.is_alive())
-                .collect();
-            match live_sessions.len() {
-                1 => {
-                    let s = &live_sessions[0];
-                    tracing::info!("auto-selected session '{}' on port {}", s.id, s.port);
-                    s.port
-                }
-                n if n > 1 => {
-                    let ids: Vec<&str> = live_sessions.iter().map(|s| s.id.as_str()).collect();
-                    return Err(crate::error::VirtuosoError::Config(format!(
-                        "multiple Virtuoso sessions active: {}. Use --session <id> to select one.",
-                        ids.join(", ")
-                    )));
-                }
-                _ => cfg.port, // 0 live sessions → use VB_PORT
-            }
-        };
+            };
 
         Ok(Self {
             host: "127.0.0.1".into(),
@@ -121,6 +125,7 @@ impl VirtuosoClient {
             schematic: SchematicOps::new(),
             window: WindowOps,
             cached_version: Cell::new(None),
+            session_id: resolved_session_id,
         })
     }
 
@@ -221,6 +226,10 @@ impl VirtuosoClient {
                 skill_code.to_string()
             };
             crate::command_log::log_command("SKILL", &truncated, Some(start.elapsed().as_millis()));
+
+            if let Some(ref sid) = self.session_id {
+                crate::history::append_skill(sid, skill_code, result.skill_ok(), &result.output);
+            }
 
             return Ok(result);
         }

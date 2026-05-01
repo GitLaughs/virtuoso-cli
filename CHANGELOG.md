@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.18] - 2026-05-01
+
+### Added
+- **Session history** — vcli now records two history streams per session:
+  - **SKILL layer** (`~/.cache/virtuoso_bridge/history/<session_id>.jsonl`): every `execute_skill()` call, timestamp + code + ok flag + output (first 512 chars); written only when a session is resolved (not on raw VB_PORT fallback)
+  - **CLI layer** (`~/.cache/virtuoso_bridge/history/cmd.jsonl`): every vcli invocation, timestamp + args + exit code + session ID; written for all commands including failures
+- **`vcli session history <id>`** — show SKILL and CLI history for a session; supports `--skill` (SKILL only), `--cmd` (CLI only), `--limit N` (default 50)
+- `VirtuosoClient::session_id` field — the resolved bridge session ID is now available on the client struct for tooling and introspection
+
 ## [0.3.17] - 2026-05-01
 
 ### Fixed

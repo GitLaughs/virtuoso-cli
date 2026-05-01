@@ -109,6 +109,56 @@ pub fn cleanup() -> Result<Value> {
     }))
 }
 
+pub fn history(id: &str, only_skill: bool, only_cmd: bool, limit: usize) -> Result<Value> {
+    let show_skill = !only_cmd;
+    let show_cmd = !only_skill;
+
+    let skill_entries: Vec<Value> = if show_skill {
+        crate::history::load_skill(id)
+            .into_iter()
+            .rev()
+            .take(if limit > 0 { limit } else { usize::MAX })
+            .rev()
+            .map(|e| {
+                serde_json::json!({
+                    "type": "skill",
+                    "ts": e.ts,
+                    "ok": e.ok,
+                    "skill": e.skill,
+                    "output": e.output,
+                })
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+
+    let cmd_entries: Vec<Value> = if show_cmd {
+        crate::history::load_cmd(Some(id), if limit > 0 { limit } else { 0 })
+            .into_iter()
+            .map(|e| {
+                serde_json::json!({
+                    "type": "cmd",
+                    "ts": e.ts,
+                    "cmd": e.cmd,
+                    "exit_code": e.exit_code,
+                })
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+
+    Ok(json!({
+        "status": "success",
+        "session": id,
+        "skill_count": skill_entries.len(),
+        "cmd_count": cmd_entries.len(),
+        "skill": skill_entries,
+        "cmd": cmd_entries,
+    }))
+}
+
 pub fn show(id: &str, _format: OutputFormat) -> Result<Value> {
     let s = SessionInfo::load(id)
         .map_err(|e| VirtuosoError::NotFound(format!("session '{id}' not found: {e}")))?;

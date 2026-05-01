@@ -3,6 +3,7 @@ use tracing_subscriber::EnvFilter;
 mod client;
 mod command_log;
 mod commands;
+mod history;
 mod config;
 mod error;
 mod exit_codes;
@@ -870,6 +871,21 @@ enum SessionCmd {
 
     /// Remove stale session files for daemons that are no longer running
     Cleanup,
+
+    /// Show SKILL and command history for a session
+    History {
+        /// Session ID to show history for (e.g. eda-meow-34785)
+        id: String,
+        /// Show only SKILL executions (default: both)
+        #[arg(long)]
+        skill: bool,
+        /// Show only CLI commands (default: both)
+        #[arg(long)]
+        cmd: bool,
+        /// Maximum number of entries to show (0 = all)
+        #[arg(long, default_value = "50")]
+        limit: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1219,6 +1235,9 @@ fn main() {
 
     let is_status_cmd = matches!(&cli.command, Commands::Tunnel(TunnelCmd::Status));
 
+    let cli_args: Vec<String> = std::env::args().collect();
+    let cli_session = cli.session.clone();
+
     let result = match cli.command {
         Commands::Init { if_not_exists } => commands::init::run(if_not_exists),
         Commands::Tunnel(cmd) => dispatch_tunnel(cmd, format),
@@ -1234,6 +1253,9 @@ fn main() {
             SessionCmd::Show { id } => commands::session::show(&id, format),
             SessionCmd::Current => commands::session::current(),
             SessionCmd::Cleanup => commands::session::cleanup(),
+            SessionCmd::History { id, skill, cmd, limit } => {
+                commands::session::history(&id, skill, cmd, limit)
+            }
         },
         Commands::Window(cmd) => dispatch_window(cmd),
         Commands::Schema { all, noun, verb } => {
@@ -1275,9 +1297,11 @@ fn main() {
                 }
             }
 
+            history::append_cmd(&cli_args, cli_session.as_deref(), exit_code as i32);
             std::process::exit(exit_code);
         }
         Err(e) => {
+            history::append_cmd(&cli_args, cli_session.as_deref(), e.exit_code() as i32);
             let cli_error = e.to_cli_error();
             cli_error.print(format);
             std::process::exit(e.exit_code());
