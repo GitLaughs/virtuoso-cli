@@ -391,7 +391,10 @@ mod session_info_tests {
         fs::remove_file(dir.join(format!("{id1}.json"))).ok();
         fs::remove_file(dir.join(format!("{id2}.json"))).ok();
 
-        assert!(found1, "first session must survive second session registration");
+        assert!(
+            found1,
+            "first session must survive second session registration"
+        );
         assert!(found2, "second session must be registered independently");
     }
 
@@ -421,7 +424,10 @@ mod session_info_tests {
         fs::remove_file(dir.join(format!("{id}.json"))).ok();
 
         let suffix: u16 = loaded.id.rsplit('-').next().unwrap().parse().unwrap();
-        assert_eq!(suffix, loaded.port, "port field must match ID suffix after load");
+        assert_eq!(
+            suffix, loaded.port,
+            "port field must match ID suffix after load"
+        );
     }
 
     #[test]
@@ -835,7 +841,10 @@ mod suggestion_tests {
     fn not_found_suggests_session_list() {
         let e = VirtuosoError::NotFound("meowu-meow-99".into());
         let s = e.suggestion().expect("NotFound should have suggestion");
-        assert!(s.contains("session list") || s.contains("session"), "got: {s}");
+        assert!(
+            s.contains("session list") || s.contains("session"),
+            "got: {s}"
+        );
     }
 
     #[test]
@@ -849,7 +858,10 @@ mod suggestion_tests {
     fn timeout_suggestion_doubles_seconds() {
         let e = VirtuosoError::Timeout(30);
         let s = e.suggestion().expect("Timeout should have suggestion");
-        assert!(s.contains("60"), "doubled timeout missing from suggestion: {s}");
+        assert!(
+            s.contains("60"),
+            "doubled timeout missing from suggestion: {s}"
+        );
     }
 
     #[test]
@@ -906,11 +918,20 @@ mod error_meta_tests {
 
     #[test]
     fn error_type_strings() {
-        assert_eq!(VirtuosoError::Connection("".into()).error_type(), "connection_failed");
-        assert_eq!(VirtuosoError::Execution("".into()).error_type(), "execution_failed");
+        assert_eq!(
+            VirtuosoError::Connection("".into()).error_type(),
+            "connection_failed"
+        );
+        assert_eq!(
+            VirtuosoError::Execution("".into()).error_type(),
+            "execution_failed"
+        );
         assert_eq!(VirtuosoError::Ssh("".into()).error_type(), "ssh_error");
         assert_eq!(VirtuosoError::Timeout(5).error_type(), "timeout");
-        assert_eq!(VirtuosoError::Config("".into()).error_type(), "config_error");
+        assert_eq!(
+            VirtuosoError::Config("".into()).error_type(),
+            "config_error"
+        );
         assert_eq!(VirtuosoError::NotFound("".into()).error_type(), "not_found");
         assert_eq!(VirtuosoError::Conflict("".into()).error_type(), "conflict");
     }
@@ -1236,7 +1257,10 @@ mod output_format_tests {
             retryable: false,
         };
         let json = serde_json::to_string(&e).unwrap();
-        assert!(!json.contains("suggestion"), "suggestion key should be absent: {json}");
+        assert!(
+            !json.contains("suggestion"),
+            "suggestion key should be absent: {json}"
+        );
     }
 
     #[test]
@@ -1467,7 +1491,11 @@ mod history_tests {
     #[test]
     fn cmd_error_exit_code_recorded() {
         let session_id = "rt-hist-cmd-err-54321";
-        append_cmd(&["vcli".to_string(), "bad-cmd".to_string()], Some(session_id), 1);
+        append_cmd(
+            &["vcli".to_string(), "bad-cmd".to_string()],
+            Some(session_id),
+            1,
+        );
 
         let entries = load_cmd(Some(session_id), 0);
         let last = entries.last().unwrap();

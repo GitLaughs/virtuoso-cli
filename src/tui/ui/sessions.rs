@@ -83,10 +83,24 @@ pub fn render_detail(frame: &mut Frame, app: &App, theme: &Theme, area: Rect) {
         } else if stats.uptime_secs < 3600 {
             format!("{}m{}s", stats.uptime_secs / 60, stats.uptime_secs % 60)
         } else {
-            format!("{}h{}m", stats.uptime_secs / 3600, (stats.uptime_secs % 3600) / 60)
+            format!(
+                "{}h{}m",
+                stats.uptime_secs / 3600,
+                (stats.uptime_secs % 3600) / 60
+            )
         };
-        lines.push(kv_line("  Calls:   ", &stats.calls.to_string(), theme, None));
-        lines.push(kv_line("  Errors:  ", &stats.errors.to_string(), theme, None));
+        lines.push(kv_line(
+            "  Calls:   ",
+            &stats.calls.to_string(),
+            theme,
+            None,
+        ));
+        lines.push(kv_line(
+            "  Errors:  ",
+            &stats.errors.to_string(),
+            theme,
+            None,
+        ));
         lines.push(kv_line("  Uptime:  ", &uptime, theme, None));
     }
     frame.render_widget(Paragraph::new(lines).block(block), area);

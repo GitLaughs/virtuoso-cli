@@ -68,7 +68,9 @@ pub fn list(format: OutputFormat) -> Result<Value> {
 pub fn current() -> Result<Value> {
     let live = SessionInfo::list_alive();
     match live.len() {
-        0 => Ok(json!({"status": "success", "session": null, "note": "no live sessions; VB_PORT will be used"})),
+        0 => Ok(
+            json!({"status": "success", "session": null, "note": "no live sessions; VB_PORT will be used"}),
+        ),
         1 => Ok(json!({
             "status": "success",
             "session": live[0].id,
@@ -121,7 +123,9 @@ pub fn history(id: &str, only_skill: bool, only_cmd: bool, limit: usize) -> Resu
     let cmd_entries: Vec<Value> = if show_cmd {
         crate::history::load_cmd(Some(id), limit)
             .into_iter()
-            .map(|e| serde_json::json!({"type":"cmd","ts":e.ts,"cmd":e.cmd,"exit_code":e.exit_code}))
+            .map(
+                |e| serde_json::json!({"type":"cmd","ts":e.ts,"cmd":e.cmd,"exit_code":e.exit_code}),
+            )
             .collect()
     } else {
         vec![]

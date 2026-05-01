@@ -45,7 +45,6 @@ impl Config {
     pub fn from_env_with_profile(profile: Option<&str>) -> Result<Self> {
         load_dotenv_upward();
 
-
         let remote_host = Self::env_with_profile("VB_REMOTE_HOST", profile);
 
         let port: u16 = Self::env_with_profile("VB_PORT", profile)
@@ -126,7 +125,9 @@ impl Config {
 /// Walk cwd → parent → … until a `.env` is found, then load it.
 /// Stops at filesystem root if no `.env` exists anywhere.
 fn load_dotenv_upward() {
-    let Ok(start) = std::env::current_dir() else { return };
+    let Ok(start) = std::env::current_dir() else {
+        return;
+    };
     let mut dir = start.as_path();
     loop {
         let candidate = dir.join(".env");

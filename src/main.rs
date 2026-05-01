@@ -3,10 +3,10 @@ use tracing_subscriber::EnvFilter;
 mod client;
 mod command_log;
 mod commands;
-mod history;
 mod config;
 mod error;
 mod exit_codes;
+mod history;
 mod models;
 mod ocean;
 mod output;
@@ -1253,9 +1253,12 @@ fn main() {
             SessionCmd::Show { id } => commands::session::show(&id, format),
             SessionCmd::Current => commands::session::current(),
             SessionCmd::Cleanup => commands::session::cleanup(),
-            SessionCmd::History { id, skill, cmd, limit } => {
-                commands::session::history(&id, skill, cmd, limit)
-            }
+            SessionCmd::History {
+                id,
+                skill,
+                cmd,
+                limit,
+            } => commands::session::history(&id, skill, cmd, limit),
         },
         Commands::Window(cmd) => dispatch_window(cmd),
         Commands::Schema { all, noun, verb } => {
@@ -1278,7 +1281,11 @@ fn main() {
 
     let exit_code = match &result {
         Ok(value) => {
-            if value.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if value
+                .get("dry_run")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
                 exit_codes::DRY_RUN_OK
             } else {
                 exit_codes::SUCCESS
@@ -1289,16 +1296,14 @@ fn main() {
     history::append_cmd(&cli_args, cli_session.as_deref(), exit_code as i32);
 
     match result {
-        Ok(value) => {
-            match format {
-                OutputFormat::Json => print_json(&value),
-                OutputFormat::Table => {
-                    if !is_status_cmd {
-                        output::print_value(&value, format);
-                    }
+        Ok(value) => match format {
+            OutputFormat::Json => print_json(&value),
+            OutputFormat::Table => {
+                if !is_status_cmd {
+                    output::print_value(&value, format);
                 }
             }
-        }
+        },
         Err(e) => {
             let cli_error = e.to_cli_error();
             cli_error.print(format);

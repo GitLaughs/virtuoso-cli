@@ -99,12 +99,11 @@ impl VirtuosoClient {
                         (s.port, Some(s.id.clone()))
                     }
                     n if n > 1 => {
-                        let ids: Vec<&str> =
-                            live_sessions.iter().map(|s| s.id.as_str()).collect();
+                        let ids: Vec<&str> = live_sessions.iter().map(|s| s.id.as_str()).collect();
                         return Err(crate::error::VirtuosoError::Config(format!(
-                            "multiple Virtuoso sessions active: {}. Use --session <id> to select one.",
-                            ids.join(", ")
-                        )));
+                        "multiple Virtuoso sessions active: {}. Use --session <id> to select one.",
+                        ids.join(", ")
+                    )));
                     }
                     _ => (cfg.port, None), // 0 live sessions → use VB_PORT
                 }

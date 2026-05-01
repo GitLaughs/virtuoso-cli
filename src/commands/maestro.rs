@@ -228,19 +228,26 @@ pub fn session_info(session: Option<&str>) -> Result<Value> {
         .or_else(|| auto_session.clone());
 
     // run_dir: bundled covers the focused-window case; second RTT for explicit/auto sessions
-    let run_dir =
-        if let Some(s) = session.filter(|s| Some(*s) != dav_session.as_deref()) {
-            let skill2 = client.maestro.run_dir_skill(s);
-            let r2 = client.execute_skill(&skill2, None)?;
-            if r2.skill_ok() { Some(r2.output_unquoted().to_string()) } else { None }
-        } else if auto_session.is_some() {
-            let s = auto_session.as_deref().unwrap();
-            let skill2 = client.maestro.run_dir_skill(s);
-            let r2 = client.execute_skill(&skill2, None)?;
-            if r2.skill_ok() { Some(r2.output_unquoted().to_string()) } else { None }
+    let run_dir = if let Some(s) = session.filter(|s| Some(*s) != dav_session.as_deref()) {
+        let skill2 = client.maestro.run_dir_skill(s);
+        let r2 = client.execute_skill(&skill2, None)?;
+        if r2.skill_ok() {
+            Some(r2.output_unquoted().to_string())
         } else {
-            bundled_run_dir
-        };
+            None
+        }
+    } else if auto_session.is_some() {
+        let s = auto_session.as_deref().unwrap();
+        let skill2 = client.maestro.run_dir_skill(s);
+        let r2 = client.execute_skill(&skill2, None)?;
+        if r2.skill_ok() {
+            Some(r2.output_unquoted().to_string())
+        } else {
+            None
+        }
+    } else {
+        bundled_run_dir
+    };
 
     Ok(json!({
         "status": "success",

@@ -47,7 +47,9 @@ impl VirtuosoResult {
             } else {
                 self.output.clone()
             };
-            Err(VirtuosoError::Execution(format!("{context} failed: {detail}")))
+            Err(VirtuosoError::Execution(format!(
+                "{context} failed: {detail}"
+            )))
         }
     }
 
@@ -244,7 +246,11 @@ impl SessionInfo {
 
     /// Return only sessions whose daemon is currently alive.
     pub fn list_alive() -> Vec<Self> {
-        Self::list().unwrap_or_default().into_iter().filter(|s| s.is_alive()).collect()
+        Self::list()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| s.is_alive())
+            .collect()
     }
 }
 

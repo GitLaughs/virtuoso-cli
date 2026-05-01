@@ -3,10 +3,10 @@
 mod client;
 mod command_log;
 mod commands;
-mod history;
 mod config;
 mod error;
 mod exit_codes;
+mod history;
 mod models;
 mod ocean;
 mod output;
