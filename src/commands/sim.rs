@@ -589,7 +589,7 @@ pub fn run_async(netlist_path: &str) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_measure_expr;
+    use super::{analysis_block, validate_measure_expr};
 
     #[test]
     fn safe_waveform_exprs_are_allowed() {
@@ -628,6 +628,30 @@ mod tests {
                 "error should mention '{pat}': {err}"
             );
         }
+    }
+
+    // ── analysis_block ────────────────────────────────────────────
+
+    #[test]
+    fn analysis_block_known_types() {
+        let dc = analysis_block("dc").expect("dc should have a block");
+        assert!(dc.contains("dc "), "{dc}");
+        assert!(dc.contains("dcOp"), "{dc}");
+
+        let ac = analysis_block("ac").expect("ac should have a block");
+        assert!(ac.contains("acSweep"), "{ac}");
+        assert!(ac.contains("dec=20"), "{ac}");
+
+        let tran = analysis_block("tran").expect("tran should have a block");
+        assert!(tran.contains("tran "), "{tran}");
+        assert!(tran.contains("stop=10u"), "{tran}");
+    }
+
+    #[test]
+    fn analysis_block_unknown_returns_none() {
+        assert!(analysis_block("noise").is_none());
+        assert!(analysis_block("xf").is_none());
+        assert!(analysis_block("").is_none());
     }
 }
 

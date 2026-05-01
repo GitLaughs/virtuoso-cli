@@ -1089,3 +1089,215 @@ mod maestro_ops_extra_tests {
         assert!(s.contains("\"sess1\""), "{s}");
     }
 }
+
+#[cfg(test)]
+mod output_format_tests {
+    use crate::output::{CliError, OutputFormat};
+
+    // ── OutputFormat::resolve (explicit only — None depends on TTY) ──
+
+    #[test]
+    fn resolve_json_explicit() {
+        assert_eq!(OutputFormat::resolve(Some("json")), OutputFormat::Json);
+    }
+
+    #[test]
+    fn resolve_table_explicit() {
+        assert_eq!(OutputFormat::resolve(Some("table")), OutputFormat::Table);
+    }
+
+    #[test]
+    fn resolve_unknown_explicit_falls_back_to_table() {
+        assert_eq!(OutputFormat::resolve(Some("csv")), OutputFormat::Table);
+        assert_eq!(OutputFormat::resolve(Some("")), OutputFormat::Table);
+    }
+
+    #[test]
+    fn resolve_none_in_non_tty_is_json() {
+        // Test processes run without a TTY, so None → Json
+        assert_eq!(OutputFormat::resolve(None), OutputFormat::Json);
+    }
+
+    // ── CliError serde ────────────────────────────────────────────
+
+    #[test]
+    fn cli_error_json_with_suggestion() {
+        let e = CliError {
+            error: "not_found".into(),
+            message: "sess-x not found".into(),
+            suggestion: Some("vcli session list".into()),
+            retryable: false,
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["error"], "not_found");
+        assert_eq!(v["message"], "sess-x not found");
+        assert_eq!(v["suggestion"], "vcli session list");
+        assert_eq!(v["retryable"], false);
+    }
+
+    #[test]
+    fn cli_error_json_omits_suggestion_when_none() {
+        let e = CliError {
+            error: "execution_failed".into(),
+            message: "failed".into(),
+            suggestion: None,
+            retryable: false,
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(!json.contains("suggestion"), "suggestion key should be absent: {json}");
+    }
+
+    #[test]
+    fn cli_error_retryable_serializes() {
+        let e = CliError {
+            error: "connection_failed".into(),
+            message: "refused".into(),
+            suggestion: None,
+            retryable: true,
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["retryable"], true);
+    }
+}
+
+#[cfg(test)]
+mod job_tests {
+    use crate::spectre::jobs::{Job, JobStatus};
+
+    fn make_job(id: &str) -> Job {
+        Job {
+            id: id.into(),
+            status: JobStatus::Running,
+            netlist_path: "/tmp/test.scs".into(),
+            raw_dir: None,
+            pid: Some(99999),
+            created: "2026-05-01T00:00:00+00:00".into(),
+            finished: None,
+            error: None,
+            remote_host: None,
+            remote_dir: None,
+        }
+    }
+
+    // ── JobStatus serde ───────────────────────────────────────────
+
+    #[test]
+    fn job_status_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&JobStatus::Running).unwrap(),
+            "\"running\""
+        );
+        assert_eq!(
+            serde_json::to_string(&JobStatus::Completed).unwrap(),
+            "\"completed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&JobStatus::Failed).unwrap(),
+            "\"failed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&JobStatus::Cancelled).unwrap(),
+            "\"cancelled\""
+        );
+    }
+
+    #[test]
+    fn job_status_deserializes_lowercase() {
+        let s: JobStatus = serde_json::from_str("\"running\"").unwrap();
+        assert_eq!(s, JobStatus::Running);
+    }
+
+    // ── Job serde round-trip ──────────────────────────────────────
+
+    #[test]
+    fn job_json_round_trip() {
+        let job = make_job("rt-test-roundtrip");
+        let json = serde_json::to_string_pretty(&job).unwrap();
+        let job2: Job = serde_json::from_str(&json).unwrap();
+        assert_eq!(job2.id, job.id);
+        assert_eq!(job2.status, job.status);
+        assert_eq!(job2.netlist_path, job.netlist_path);
+        assert_eq!(job2.pid, job.pid);
+    }
+
+    // ── Job::save / load ──────────────────────────────────────────
+
+    #[test]
+    fn job_save_and_load_round_trip() {
+        let id = "rt-test-save-load-01";
+        let job = make_job(id);
+        job.save().expect("save should succeed");
+
+        let loaded = Job::load(id).expect("load should succeed");
+        assert_eq!(loaded.id, id);
+        assert_eq!(loaded.status, JobStatus::Running);
+        assert_eq!(loaded.pid, Some(99999));
+
+        Job::delete(id).ok();
+    }
+
+    #[test]
+    fn job_load_missing_returns_not_found() {
+        let err = Job::load("rt-test-nonexistent-xyz-99").unwrap_err();
+        assert!(err.to_string().contains("not found"), "{err}");
+    }
+
+    // ── Job::cancel on non-running job ────────────────────────────
+
+    #[test]
+    fn cancel_completed_job_returns_error() {
+        let mut job = make_job("rt-test-cancel-completed");
+        job.status = JobStatus::Completed;
+        let err = job.cancel().unwrap_err();
+        assert!(
+            err.to_string().contains("not running"),
+            "should mention not running: {err}"
+        );
+    }
+
+    #[test]
+    fn cancel_failed_job_returns_error() {
+        let mut job = make_job("rt-test-cancel-failed");
+        job.status = JobStatus::Failed;
+        let err = job.cancel().unwrap_err();
+        assert!(err.to_string().contains("not running"), "{err}");
+    }
+
+    // ── Job::list_all ─────────────────────────────────────────────
+
+    #[test]
+    fn list_all_includes_saved_job() {
+        let id = "rt-test-list-all-01";
+        let job = make_job(id);
+        job.save().expect("save");
+
+        let jobs = Job::list_all().expect("list_all");
+        let found = jobs.iter().any(|j| j.id == id);
+        Job::delete(id).ok();
+        assert!(found, "saved job should appear in list_all");
+    }
+
+    #[test]
+    fn list_all_sorted_by_created() {
+        let id_a = "rt-test-sort-aaa";
+        let id_z = "rt-test-sort-zzz";
+        let mut job_a = make_job(id_a);
+        let mut job_z = make_job(id_z);
+        job_a.created = "2026-01-01T00:00:00+00:00".into();
+        job_z.created = "2026-12-31T00:00:00+00:00".into();
+        job_a.save().ok();
+        job_z.save().ok();
+
+        let jobs = Job::list_all().expect("list_all");
+        let pos_a = jobs.iter().position(|j| j.id == id_a);
+        let pos_z = jobs.iter().position(|j| j.id == id_z);
+        Job::delete(id_a).ok();
+        Job::delete(id_z).ok();
+
+        if let (Some(a), Some(z)) = (pos_a, pos_z) {
+            assert!(a < z, "earlier created job should sort first");
+        }
+    }
+}
