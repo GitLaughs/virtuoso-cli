@@ -42,6 +42,8 @@ unless(boundp('RBIpc) RBIpc = 'unbound)
 ; Session management — persist across reloads so session_id stays stable
 unless(boundp('RBSessionId)   RBSessionId   = "")
 unless(boundp('RBSessionSeq)  RBSessionSeq  = 0)
+; hostname-user prefix stored globally so RBIpcErrHandler can build the final session ID
+unless(boundp('RBSessionBase) RBSessionBase = "")
 ; SSH port for tunnel connection — read from env or default to 2222
 unless(boundp('RBsshPort)
     RBsshPort = let((envPort)
@@ -100,6 +102,11 @@ procedure(RBIpcErrHandler(ipcId data)
             actualPort = atoi(rexSubstitute("\\1"))
             when(actualPort > 0
                 RBPort = actualPort
+                ; Finalize session ID using the unique OS-assigned port as suffix.
+                ; Replaces the temporary sequence-based suffix set in RBStart().
+                when(RBSessionBase != ""
+                    RBSessionId = sprintf(nil "%s-%d" RBSessionBase RBPort)
+                )
                 RBWriteSession(RBSessionId RBPort)
                 printf("[RAMIC Bridge] Session '%s' on port %d\n" RBSessionId RBPort)
                 ; Print banner here so the port is always known-correct.
@@ -142,14 +149,19 @@ procedure(RBStart()
 			else
 				logpath = ""
 			)
-			; Generate stable session_id: hostname-username-N (increments per RBStart)
+			; Build session ID: base = hostname-user, final = hostname-user-<port>
+			; Port suffix is set by RBIpcErrHandler once the OS-assigned port is known,
+			; guaranteeing uniqueness across concurrent Virtuoso instances (each daemon
+			; gets a different port — RBSessionSeq alone collides since every process
+			; starts with RBSessionSeq=0 and increments to 1).
 			hostname = getShellEnvVar("HOSTNAME")
 			unless(hostname hostname = "localhost")
 			hostname = car(parseString(hostname "."))  ; strip domain
 			username = getShellEnvVar("USER")
 			unless(username username = "user")
 			RBSessionSeq = RBSessionSeq + 1
-			RBSessionId = sprintf(nil "%s-%s-%d" hostname username RBSessionSeq)
+			RBSessionBase = sprintf(nil "%s-%s" hostname username)
+			RBSessionId = sprintf(nil "%s-%d" RBSessionBase RBSessionSeq)  ; temp; overwritten with port below
 			; Start the daemon with port=0 (OS assigns free port).
 			; RBIpcErrHandler will parse PORT:N from stderr and write session file.
 			RBIpc = ipcBeginProcess(sprintf(nil "%s %s 0" RBDPath host) "" 'RBIpcDataHandler 'RBIpcErrHandler 'RBIpcFinishHandler logpath)
