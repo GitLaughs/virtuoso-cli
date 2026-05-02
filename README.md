@@ -28,7 +28,8 @@ Control Cadence Virtuoso from anywhere — locally or remotely. Designed for AI 
 
 - **Multi-session support** — Multiple Virtuoso instances on the same server each get a unique session ID and random port, with no conflicts
 - **Dynamic port assignment** — Daemon binds port 0 (OS assigns), eliminating port collision
-- **Session auto-discovery** — Single session connects automatically; multiple sessions require `--session` or `VB_SESSION`
+- **Session auto-discovery** — Single session connects automatically; multiple sessions require `--session` or `VB_SESSION`; stale session files for dead daemons are silently filtered out
+- **Session history** — Per-session SKILL execution log and CLI command history; survives reconnection (`vcli session history <id>`)
 - **Three programming modes** — Raw SKILL expressions, high-level API, or load `.il` files directly
 - **Local + remote modes** — Direct local connection or SSH tunnel with ControlMaster multiplexing
 - **Agent-native CLI** — Noun-verb command structure, JSON structured output, schema introspection, semantic exit codes
@@ -78,7 +79,7 @@ Output:
 ├─────────────────────────────────────────┤
 │  Session : eda-meow-1                   │
 │  Port    : 42109                        │
-│  Version : 0.3.2                        │
+│  Version : 0.3.18                       │
 │  Daemon  : ~/.cargo/bin/virtuoso-daemon │
 ├─────────────────────────────────────────┤
 │  Terminal: vcli skill exec 'version()'  │
@@ -144,7 +145,10 @@ vcli [--profile P] [--session S] [--format json|table]
 ├── init                              Generate .env config template
 ├── session                           Manage bridge sessions
 │   ├── list                              List all active sessions
-│   └── show [id]                         Show session details
+│   ├── show [id]                         Show session details
+│   ├── current                           Show which session would be auto-selected
+│   ├── cleanup                           Remove stale session files for dead daemons
+│   └── history <id> [--skill] [--cmd] [--limit N]   SKILL + CLI history for a session
 ├── tunnel                            Manage SSH tunnel
 │   ├── start [--timeout N] [--dry-run]
 │   ├── stop [--force] [--dry-run]
@@ -238,7 +242,8 @@ vcli skill exec    # connects to port N
 
 - **多 session 支持** — 同一台服务器上可同时运行多个 Virtuoso 实例，每个实例自动分配唯一 session_id 和随机端口，互不干扰
 - **动态端口分配** — daemon 绑定端口 0（OS 自动分配），彻底避免端口冲突
-- **session 自动发现** — 只有一个 session 时无需指定；多个 session 时通过 `--session` 或 `VB_SESSION` 选择
+- **session 自动发现** — 只有一个 session 时无需指定；多个 session 时通过 `--session` 或 `VB_SESSION` 选择；已死亡的 daemon 对应的 session 文件自动过滤
+- **Session 历史记录** — 每个 session 独立保存 SKILL 执行日志和 CLI 命令历史，断线重连后可恢复（`vcli session history <id>`）
 - **三种编程方式** — 原始 SKILL 表达式、高阶 API、或直接加载 .il 文件
 - **本地+远程模式** — 支持本地直连或 SSH 隧道（ControlMaster 连接复用）
 - **Agent 原生 CLI** — noun-verb 命令结构、JSON 结构化输出、schema 自省、语义化退出码
@@ -288,7 +293,7 @@ load("/path/to/virtuoso-cli/resources/ramic_bridge.il")
 ├─────────────────────────────────────────┤
 │  Session : eda-meow-1                   │
 │  Port    : 42109                        │
-│  Version : 0.3.2                        │
+│  Version : 0.3.18                       │
 │  Daemon  : ~/.cargo/bin/virtuoso-daemon │
 ├─────────────────────────────────────────┤
 │  Terminal: vcli skill exec 'version()'  │
@@ -354,7 +359,10 @@ vcli [--profile P] [--session S] [--format json|table]
 ├── init                              创建 .env 配置模板
 ├── session                           管理 bridge session
 │   ├── list                              列出所有活跃 session
-│   └── show [id]                         查看 session 详情
+│   ├── show [id]                         查看 session 详情
+│   ├── current                           显示会被自动选中的 session
+│   ├── cleanup                           删除已死亡 daemon 的 session 文件
+│   └── history <id> [--skill] [--cmd] [--limit N]   查看 SKILL + CLI 历史
 ├── tunnel                            管理 SSH 隧道
 │   ├── start / stop / restart / status
 │   └── diagnose                          完整连接诊断
