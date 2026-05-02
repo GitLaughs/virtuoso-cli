@@ -2,7 +2,7 @@
 
 ## Lifecycle State
 - Last Event: self-improve
-- Last Note: IC23 two-layer design variable namespaces: maeSetVar vs asiSetDesignVarList; CMI-2441 root cause
+- Last Note: history-evolve first run: skill-exec binary name fix (vcli not virtuoso) + dead-session recovery pattern
 
 ## Project Paths
 - Project Root: `/home/meow/git/virtuoso-cli`
