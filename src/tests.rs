@@ -373,16 +373,22 @@ mod session_info_tests {
         // RBWriteSession call silently overwrote the first session file.
         // After the fix RBIpcErrHandler uses the OS-assigned port as suffix, so each
         // bridge instance writes a distinct file. Verify both survive.
+        // Bind real ports so concurrent cleanup() calls don't delete these sessions.
+        let l1 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let l2 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let p1 = l1.local_addr().unwrap().port();
+        let p2 = l2.local_addr().unwrap().port();
+
         let dir = SessionInfo::sessions_dir();
         fs::create_dir_all(&dir).unwrap();
 
-        let id1 = "rt-test-session-41357";
-        let id2 = "rt-test-session-45715";
+        let id1 = format!("rt-test-session-{p1}");
+        let id2 = format!("rt-test-session-{p2}");
         fs::remove_file(dir.join(format!("{id1}.json"))).ok();
         fs::remove_file(dir.join(format!("{id2}.json"))).ok();
 
-        write_session(&dir, &make_session(id1, 41357));
-        write_session(&dir, &make_session(id2, 45715));
+        write_session(&dir, &make_session(&id1, p1));
+        write_session(&dir, &make_session(&id2, p2));
 
         let sessions = SessionInfo::list().unwrap();
         let found1 = sessions.iter().any(|s| s.id == id1);
@@ -390,6 +396,7 @@ mod session_info_tests {
 
         fs::remove_file(dir.join(format!("{id1}.json"))).ok();
         fs::remove_file(dir.join(format!("{id2}.json"))).ok();
+        drop((l1, l2));
 
         assert!(
             found1,
@@ -434,16 +441,22 @@ mod session_info_tests {
     fn multiple_sessions_all_visible() {
         // When N Virtuoso instances are running, SessionInfo::list() must return all N
         // so VirtuosoClient::from_env() can present the full "--session <id>" list.
+        // Bind real ports so concurrent cleanup() calls don't delete these sessions.
+        let l1 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let l2 = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let p1 = l1.local_addr().unwrap().port();
+        let p2 = l2.local_addr().unwrap().port();
+
         let dir = SessionInfo::sessions_dir();
         fs::create_dir_all(&dir).unwrap();
 
-        let id1 = "rt-test-multi-63001";
-        let id2 = "rt-test-multi-63002";
+        let id1 = format!("rt-test-multi-{p1}");
+        let id2 = format!("rt-test-multi-{p2}");
         fs::remove_file(dir.join(format!("{id1}.json"))).ok();
         fs::remove_file(dir.join(format!("{id2}.json"))).ok();
 
-        write_session(&dir, &make_session(id1, 63001));
-        write_session(&dir, &make_session(id2, 63002));
+        write_session(&dir, &make_session(&id1, p1));
+        write_session(&dir, &make_session(&id2, p2));
 
         let sessions = SessionInfo::list().unwrap();
         let found1 = sessions.iter().any(|s| s.id == id1);
@@ -451,6 +464,7 @@ mod session_info_tests {
 
         fs::remove_file(dir.join(format!("{id1}.json"))).ok();
         fs::remove_file(dir.join(format!("{id2}.json"))).ok();
+        drop((l1, l2));
 
         assert!(found1, "first Virtuoso's session must appear in list");
         assert!(found2, "second Virtuoso's session must appear in list");
@@ -459,12 +473,18 @@ mod session_info_tests {
     #[test]
     fn stale_session_filtered_in_cleanup() {
         // Dead session files (port not bound) must be removed by session::cleanup()
+        // Bind then drop to get a port we know is currently free.
+        let port = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap().port()
+        };
+
         let dir = SessionInfo::sessions_dir();
         fs::create_dir_all(&dir).unwrap();
 
-        let id = "rt-test-stale-19999"; // port 19999 should never be bound in CI
+        let id = format!("rt-test-stale-{port}");
         fs::remove_file(dir.join(format!("{id}.json"))).ok();
-        write_session(&dir, &make_session(id, 19999));
+        write_session(&dir, &make_session(&id, port));
 
         let result = crate::commands::session::cleanup().unwrap();
         let removed: Vec<String> = result["sessions"]
@@ -477,7 +497,7 @@ mod session_info_tests {
         fs::remove_file(dir.join(format!("{id}.json"))).ok();
 
         assert!(
-            removed.contains(&id.to_string()),
+            removed.contains(&id),
             "stale session must appear in cleanup result"
         );
     }
