@@ -98,7 +98,7 @@ pub fn load_cmd(session_filter: Option<&str>, limit: usize) -> Vec<CmdEntry> {
         .unwrap_or_default()
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
-        .filter(|e: &CmdEntry| session_filter.map_or(true, |id| e.session.as_deref() == Some(id)))
+        .filter(|e: &CmdEntry| session_filter.is_none_or(|id| e.session.as_deref() == Some(id)))
         .collect();
     tail(entries, limit)
 }

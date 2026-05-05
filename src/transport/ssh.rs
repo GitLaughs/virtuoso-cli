@@ -111,6 +111,29 @@ impl SSHRunner {
         Ok(result)
     }
 
+    /// Apply ControlMaster fallback to file-transfer operations.
+    /// If the first attempt fails with a CM failure pattern, disables CM and retries once.
+    /// `attempt` must be callable multiple times (each call rebuilds the SSH command via
+    /// `build_ssh_cmd()`, which respects the updated `use_control_master` flag).
+    fn attempt_with_cm_fallback<F>(&self, mut attempt: F) -> Result<std::process::Output>
+    where
+        F: FnMut() -> Result<std::process::Output>,
+    {
+        let output = attempt()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if Self::is_cm_failure(&stderr) && self.use_control_master.get() {
+                tracing::warn!(
+                    "ControlMaster failure in file transfer, retrying without CM: {}",
+                    stderr.lines().next().unwrap_or("")
+                );
+                self.use_control_master.set(false);
+                return attempt();
+            }
+        }
+        Ok(output)
+    }
+
     /// Base SSH command with login shell args (`sh -l -s`) appended.
     /// Extracted so the login-shell flag is testable without spawning a process.
     pub(crate) fn build_run_cmd(&self) -> Command {
@@ -166,49 +189,47 @@ impl SSHRunner {
     }
 
     pub fn upload(&self, local: &str, remote: &str) -> Result<()> {
-        let _target = self.remote_target();
-
-        let status = Command::new("tar")
-            .arg("cf")
-            .arg("-")
-            .arg("-C")
-            .arg(
-                std::path::Path::new(local)
-                    .parent()
-                    .unwrap_or_else(|| std::path::Path::new(".")),
-            )
-            .arg(std::path::Path::new(local).file_name().unwrap_or_default())
-            .stdout(Stdio::piped())
-            .spawn()
-            .map_err(|e| VirtuosoError::Ssh(format!("tar failed: {e}")))?;
-
-        let tar_stdout = status.stdout.unwrap();
-
+        let local_path = std::path::Path::new(local);
+        let local_parent = local_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let local_name = local_path.file_name().unwrap_or_default();
         let remote_dir = std::path::Path::new(remote)
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
-            .to_string_lossy();
-
-        let mut ssh = self.build_ssh_cmd();
+            .to_string_lossy()
+            .into_owned();
         let quoted_dir = shell_quote(&remote_dir);
         // Must pass "sh -c 'command'" as a single argument to SSH,
         // otherwise "sh", "-c", "command" are concatenated without quotes,
         // breaking commands with &&.
         let inner_cmd = format!("mkdir -p {quoted_dir} && cd {quoted_dir} && tar xf -");
-        ssh.arg(format!("sh -c {}", shell_quote(&inner_cmd)));
-        ssh.stdin(tar_stdout);
 
-        let output = ssh
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| VirtuosoError::Ssh(format!("ssh upload failed: {e}")))?;
+        let output = self.attempt_with_cm_fallback(|| {
+            let tar = Command::new("tar")
+                .arg("cf")
+                .arg("-")
+                .arg("-C")
+                .arg(local_parent)
+                .arg(local_name)
+                .stdout(Stdio::piped())
+                .spawn()
+                .map_err(|e| VirtuosoError::Ssh(format!("tar failed: {e}")))?;
+
+            let tar_stdout = tar.stdout.unwrap();
+            let mut ssh = self.build_ssh_cmd();
+            ssh.arg(format!("sh -c {}", shell_quote(&inner_cmd)));
+            ssh.stdin(tar_stdout)
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .output()
+                .map_err(|e| VirtuosoError::Ssh(format!("ssh upload failed: {e}")))
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(VirtuosoError::Ssh(format!("upload failed: {stderr}")));
         }
-
         Ok(())
     }
 
@@ -216,7 +237,8 @@ impl SSHRunner {
         let remote_dir = std::path::Path::new(remote)
             .parent()
             .unwrap_or_else(|| std::path::Path::new("."))
-            .to_string_lossy();
+            .to_string_lossy()
+            .into_owned();
 
         let quoted_dir = shell_quote(&remote_dir);
         let mkdir_cmd = format!("mkdir -p {quoted_dir}");
@@ -228,58 +250,57 @@ impl SSHRunner {
             )));
         }
 
-        let mut cmd = self.build_ssh_cmd();
         let quoted_remote = shell_quote(remote);
         // Must pass "sh -c 'command'" as a single argument to SSH,
         // otherwise "sh", "-c", "command" are concatenated without quotes,
         // breaking commands with &&.
-        cmd.arg(format!(
-            "sh -c {}",
-            shell_quote(&format!("cat > {quoted_remote}"))
-        ));
+        let output = self.attempt_with_cm_fallback(|| {
+            let mut cmd = self.build_ssh_cmd();
+            cmd.arg(format!(
+                "sh -c {}",
+                shell_quote(&format!("cat > {quoted_remote}"))
+            ));
 
-        let output = cmd
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|e| VirtuosoError::Ssh(format!("ssh failed: {e}")))?;
+            let mut child = cmd
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| VirtuosoError::Ssh(format!("ssh failed: {e}")))?;
 
-        if let Some(mut stdin) = output.stdin.as_ref() {
-            stdin
-                .write_all(text.as_bytes())
-                .map_err(|e| VirtuosoError::Ssh(format!("write failed: {e}")))?;
-        }
+            if let Some(mut stdin) = child.stdin.take() {
+                stdin
+                    .write_all(text.as_bytes())
+                    .map_err(|e| VirtuosoError::Ssh(format!("write failed: {e}")))?;
+            }
 
-        let output = output
-            .wait_with_output()
-            .map_err(|e| VirtuosoError::Ssh(format!("upload failed: {e}")))?;
+            child
+                .wait_with_output()
+                .map_err(|e| VirtuosoError::Ssh(format!("upload failed: {e}")))
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(VirtuosoError::Ssh(format!("upload failed: {stderr}")));
         }
-
         Ok(())
     }
 
     pub fn download(&self, remote: &str, local: &str) -> Result<()> {
-        let _target = self.remote_target();
-
         let local_path = std::path::Path::new(local);
         if let Some(parent) = local_path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| VirtuosoError::Ssh(format!("failed to create local dir: {e}")))?;
         }
 
-        let mut cmd = self.build_ssh_cmd();
-        cmd.arg("cat").arg(remote);
-
-        let output = cmd
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| VirtuosoError::Ssh(format!("ssh download failed: {e}")))?;
+        let output = self.attempt_with_cm_fallback(|| {
+            let mut cmd = self.build_ssh_cmd();
+            cmd.arg("cat").arg(remote);
+            cmd.stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .map_err(|e| VirtuosoError::Ssh(format!("ssh download failed: {e}")))
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
