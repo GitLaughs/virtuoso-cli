@@ -10,12 +10,14 @@ mod history;
 mod models;
 mod ocean;
 mod output;
+mod rpc;
 mod spectre;
 mod transaction;
 mod transport;
 mod tui;
 mod version;
 
+pub use rpc::schema::standard_schema;
 pub use transaction::{SchematicDiff, SchematicSnapshot, TransactionManager};
 
 fn main() {

@@ -10,6 +10,7 @@ mod history;
 mod models;
 mod ocean;
 mod output;
+mod rpc;
 mod spectre;
 #[cfg(test)]
 mod tests;
@@ -18,6 +19,7 @@ mod transport;
 mod tui;
 mod version;
 
+pub use rpc::schema::standard_schema;
 pub use transaction::{SchematicDiff, SchematicSnapshot, TransactionManager};
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -127,6 +129,10 @@ enum Commands {
     /// Transaction management — begin/commit/rollback/diff snapshots of schematic changes
     #[command(subcommand)]
     Tx(TxCmd),
+
+    /// Typed RPC — call methods by name with JSON params (AI agent interface)
+    #[command(subcommand)]
+    Rpc(RpcCmd),
 
     /// Show CLI command schema as JSON for agent introspection
     #[command(
@@ -977,6 +983,27 @@ enum WindowCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum RpcCmd {
+    /// Call an RPC method by name with JSON params
+    ///
+    /// Examples:
+    ///   vcli rpc call schematic.open_cell_view '{"lib":"myLib","cell":"myCell"}'
+    ///   vcli rpc call schematic.list_instances '{}'
+    Call {
+        /// Method name (e.g. schematic.place)
+        #[arg(long)]
+        method: String,
+
+        /// JSON params object
+        #[arg(long)]
+        params: String,
+    },
+
+    /// Show all available RPC methods and their signatures
+    Schema,
+}
+
 fn parse_key_val(s: &str) -> std::result::Result<(String, String), String> {
     let pos = s
         .find('=')
@@ -1273,6 +1300,22 @@ fn dispatch_tx(cmd: TxCmd) -> error::Result<serde_json::Value> {
     }
 }
 
+fn dispatch_rpc(cmd: RpcCmd) -> error::Result<serde_json::Value> {
+    match cmd {
+        RpcCmd::Call { method, params } => {
+            let params: serde_json::Value =
+                serde_json::from_str(&params).map_err(crate::error::VirtuosoError::Json)?;
+            let client = crate::client::bridge::VirtuosoClient::from_env()?;
+            let request = crate::rpc::dispatcher::RpcRequest { method, params };
+            crate::rpc::dispatcher::RpcDispatcher::dispatch(&client, request)
+        }
+        RpcCmd::Schema => {
+            let schema = standard_schema();
+            Ok(serde_json::to_value(schema).unwrap())
+        }
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -1344,6 +1387,7 @@ fn main() {
             } => commands::session::history(&id, skill, cmd, limit),
         },
         Commands::Tx(cmd) => dispatch_tx(cmd),
+        Commands::Rpc(cmd) => dispatch_rpc(cmd),
         Commands::Window(cmd) => dispatch_window(cmd),
         Commands::Schema { all, noun, verb } => {
             let schema = if all || noun.is_none() {

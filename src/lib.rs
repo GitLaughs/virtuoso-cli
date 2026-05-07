@@ -10,6 +10,7 @@ pub mod history;
 pub mod models;
 pub mod ocean;
 pub mod output;
+pub mod rpc;
 pub mod spectre;
 pub mod transaction;
 pub mod transport;
