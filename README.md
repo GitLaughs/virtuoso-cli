@@ -27,6 +27,7 @@ Control Cadence Virtuoso from anywhere — locally or remotely. Designed for AI 
 ### Key Features
 
 - **Multi-session support** — Multiple Virtuoso instances on the same server each get a unique session ID and random port, with no conflicts
+- **Multi-session broadcast** — `vcli skill broadcast` fans out to all live sessions concurrently via scoped threads; subagent mode supports heterogeneous multi-step per-session workflows
 - **Dynamic port assignment** — Daemon binds port 0 (OS assigns), eliminating port collision
 - **Session auto-discovery** — Single session connects automatically; multiple sessions require `--session` or `VB_SESSION`; stale session files for dead daemons are silently filtered out
 - **Session history** — Per-session SKILL execution log and CLI command history; survives reconnection (`vcli session history <id>`)
@@ -35,7 +36,7 @@ Control Cadence Virtuoso from anywhere — locally or remotely. Designed for AI 
 - **Agent-native CLI** — Noun-verb command structure, JSON structured output, schema introspection, semantic exit codes
 - **Schematic editing & reading** — Create, place, wire, connect + read instances, nets, pins, parameters
 - **Maestro ADE management** — Open/close Explorer (`maestro`) view sessions, set variables, run simulations, export results (IC23.1+ unified ADE)
-- **Spectre simulation** — Sync/async simulation, job registry with status tracking, PSF parser
+- **Spectre simulation** — Sync/async simulation, job registry with status tracking and atomic file writes, PSF parser
 - **Multi-profile support** — `--profile` flag for concurrent connections to multiple Virtuoso instances
 - **Command logging** — All SKILL executions logged to `~/.cache/virtuoso_bridge/logs/commands.log`
 - **Interactive TUI** — `vtui` terminal dashboard showing sessions, jobs, tunnel status
@@ -126,6 +127,12 @@ vcli maestro run --session fnxSession4                 # async run
 vcli maestro export --session fnxSession4 --path out.csv
 ```
 
+**Multi-Session Operations:**
+```bash
+vcli skill broadcast 'getVersion(t)'            # Same SKILL on all sessions
+VB_SESSION=eda-meow-1 vcli maestro run ...      # Different tasks via subagents
+```
+
 ### Multi-Session Architecture
 
 ```
@@ -157,7 +164,8 @@ vcli [--profile P] [--session S] [--format json|table]
 │   └── diagnose                          Full connection diagnostics
 ├── skill                             Execute SKILL code
 │   ├── exec <code> [--timeout N]
-│   └── load <file>
+│   ├── load <file>
+│   └── broadcast <code>              Fan out to all live sessions in parallel
 ├── cell                              Manage cellviews
 │   ├── open --lib L --cell C [--view V] [--mode M] [--dry-run]
 │   ├── save / close / info
@@ -241,6 +249,7 @@ vcli skill exec    # connects to port N
 ### 核心特性
 
 - **多 session 支持** — 同一台服务器上可同时运行多个 Virtuoso 实例，每个实例自动分配唯一 session_id 和随机端口，互不干扰
+- **多 session 并发广播** — `vcli skill broadcast` 通过 scoped threads 并发广播到所有活跃 session；subagent 模式支持不同 session 执行不同多步工作流
 - **动态端口分配** — daemon 绑定端口 0（OS 自动分配），彻底避免端口冲突
 - **session 自动发现** — 只有一个 session 时无需指定；多个 session 时通过 `--session` 或 `VB_SESSION` 选择；已死亡的 daemon 对应的 session 文件自动过滤
 - **Session 历史记录** — 每个 session 独立保存 SKILL 执行日志和 CLI 命令历史，断线重连后可恢复（`vcli session history <id>`）
@@ -340,6 +349,12 @@ vcli maestro run --session fnxSession4                 # 异步运行
 vcli maestro export --session fnxSession4 --path out.csv
 ```
 
+**多 session 并发操作：**
+```bash
+vcli skill broadcast 'getVersion(t)'            # 同一 SKILL 广播到所有 session
+VB_SESSION=eda-meow-1 vcli maestro run ...      # 通过 subagent 实现不同任务
+```
+
 ### 多 Session 工作原理
 
 ```
@@ -368,7 +383,8 @@ vcli [--profile P] [--session S] [--format json|table]
 │   └── diagnose                          完整连接诊断
 ├── skill                             执行 SKILL 代码
 │   ├── exec <code> [--timeout N]
-│   └── load <file>
+│   ├── load <file>
+│   └── broadcast <code>              并发广播到所有活跃 session
 ├── cell                              管理 cellview
 │   ├── open / save / close / info
 ├── schematic                         原理图编辑与读取
