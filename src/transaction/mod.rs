@@ -39,6 +39,12 @@ pub struct TransactionManager {
     committed: Vec<String>,
 }
 
+impl Default for TransactionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TransactionManager {
     pub fn new() -> Self {
         Self {

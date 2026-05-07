@@ -47,6 +47,8 @@ libc = "0.2"
 ratatui = "0.29"
 crossterm = "0.28"
 unicode-width = "0.2"
+tokio = { version = "1", features = ["full"] }
+num_cpus = "1"
 
 [profile.release]
 lto = true

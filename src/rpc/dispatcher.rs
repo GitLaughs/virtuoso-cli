@@ -3,6 +3,7 @@
 //! Each domain (schematic, maestro, window, cell) is handled by its ops struct.
 //! The dispatcher routes the incoming JSON-RPC request to the correct handler.
 
+use crate::auth::{check_auth, log_rpc};
 use crate::client::bridge::VirtuosoClient;
 use crate::error::{Result, VirtuosoError};
 use serde_json::Value;
@@ -12,42 +13,10 @@ use serde_json::Value;
 pub struct RpcRequest {
     pub method: String,
     pub params: Value,
-}
-
-/// JSON-RPC response.
-#[derive(Debug, serde::Serialize)]
-pub struct RpcResponse {
-    #[serde(rename = "jsonrpc")]
-    pub jsonrpc: &'static str,
-    pub id: Option<Value>,
-    pub result: Option<Value>,
-    pub error: Option<RpcError>,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct RpcError {
-    pub code: i32,
-    pub message: String,
-}
-
-impl RpcResponse {
-    pub fn success(result: Value, id: Option<Value>) -> Self {
-        Self {
-            jsonrpc: "2.0",
-            id,
-            result: Some(result),
-            error: None,
-        }
-    }
-
-    pub fn error(code: i32, message: String, id: Option<Value>) -> Self {
-        Self {
-            jsonrpc: "2.0",
-            id,
-            result: None,
-            error: Some(RpcError { code, message }),
-        }
-    }
+    /// Optional API key for auth (from X-API-Key header or query param).
+    /// Loaded by the caller before dispatch.
+    #[allow(dead_code)]
+    pub api_key: Option<String>,
 }
 
 pub struct RpcDispatcher;
@@ -55,7 +24,28 @@ pub struct RpcDispatcher;
 impl RpcDispatcher {
     /// Dispatch a JSON-RPC request to the appropriate handler.
     pub fn dispatch(client: &VirtuosoClient, request: RpcRequest) -> Result<Value> {
-        let RpcRequest { method, params } = request;
+        let RpcRequest {
+            method,
+            params,
+            api_key,
+        } = request;
+
+        // Auth check (fails fast if invalid/missing key)
+        check_auth(api_key.as_deref())?;
+
+        let result = Self::dispatch_inner(client, &method, params.clone());
+
+        // Audit log — always log, regardless of success/failure
+        let result_str = match &result {
+            Ok(v) => serde_json::to_string(v).unwrap_or_default(),
+            Err(e) => format!("error: {e}"),
+        };
+        log_rpc(&method, &params, &result_str, client.session_id.as_deref());
+
+        result
+    }
+
+    fn dispatch_inner(client: &VirtuosoClient, method: &str, params: Value) -> Result<Value> {
         let parts: Vec<&str> = method.splitn(2, '.').collect();
         if parts.len() != 2 {
             return Err(VirtuosoError::Execution(format!(
@@ -85,7 +75,7 @@ impl RpcDispatcher {
                 let cell = json_str(params.get("cell"), "cell")?;
                 let view = json_str_or(params.get("view"), "schematic")?;
                 let skill = ops.open_cellview(&lib, &cell, &view);
-                client.execute_skill(&skill, None)?;
+                client.execute_skill_unchecked(&skill, None)?;
                 Ok(serde_json::json!({ "status": "ok" }))
             }
             "place" => {
@@ -95,7 +85,7 @@ impl RpcDispatcher {
                 let y = json_i64_or(params.get("y"), 0);
                 let orient = json_str_or(params.get("orient"), "R0")?;
                 let skill = ops.create_instance(&master, &master, "symbol", &name, (x, y), &orient);
-                client.execute_skill(&skill, None)?;
+                client.execute_skill_unchecked(&skill, None)?;
                 Ok(serde_json::json!({ "status": "ok" }))
             }
             "wire" => {
@@ -117,7 +107,7 @@ impl RpcDispatcher {
                     })
                     .collect();
                 let skill = ops.create_wire(&pts, "wire", &net);
-                client.execute_skill(&skill, None)?;
+                client.execute_skill_unchecked(&skill, None)?;
                 Ok(serde_json::json!({ "status": "ok" }))
             }
             "label" => {
@@ -125,7 +115,7 @@ impl RpcDispatcher {
                 let x = json_i64_or(params.get("x"), 0);
                 let y = json_i64_or(params.get("y"), 0);
                 let skill = ops.create_wire_label(&net, (x, y));
-                client.execute_skill(&skill, None)?;
+                client.execute_skill_unchecked(&skill, None)?;
                 Ok(serde_json::json!({ "status": "ok" }))
             }
             "pin" => {
@@ -134,41 +124,41 @@ impl RpcDispatcher {
                 let x = json_i64_or(params.get("x"), 0);
                 let y = json_i64_or(params.get("y"), 0);
                 let skill = ops.create_pin(&net, &dir, (x, y));
-                client.execute_skill(&skill, None)?;
+                client.execute_skill_unchecked(&skill, None)?;
                 Ok(serde_json::json!({ "status": "ok" }))
             }
             "save" => {
                 let skill = ops.save();
-                client.execute_skill(&skill, None)?;
+                client.execute_skill_unchecked(&skill, None)?;
                 Ok(serde_json::json!({ "status": "ok" }))
             }
             "check" => {
                 let skill = ops.check();
-                let r = client.execute_skill(&skill, None)?;
+                let r = client.execute_skill_unchecked(&skill, None)?;
                 Ok(serde_json::json!({ "status": "ok", "output": r.output }))
             }
             "list_instances" => {
                 let skill = ops.list_instances();
-                let r = client.execute_skill(&skill, None)?;
+                let r = client.execute_skill_unchecked(&skill, None)?;
                 let parsed: Value = serde_json::from_str(&r.output).map_err(VirtuosoError::Json)?;
                 Ok(parsed)
             }
             "list_nets" => {
                 let skill = ops.list_nets();
-                let r = client.execute_skill(&skill, None)?;
+                let r = client.execute_skill_unchecked(&skill, None)?;
                 let parsed: Value = serde_json::from_str(&r.output).map_err(VirtuosoError::Json)?;
                 Ok(parsed)
             }
             "list_pins" => {
                 let skill = ops.list_pins();
-                let r = client.execute_skill(&skill, None)?;
+                let r = client.execute_skill_unchecked(&skill, None)?;
                 let parsed: Value = serde_json::from_str(&r.output).map_err(VirtuosoError::Json)?;
                 Ok(parsed)
             }
             "get_params" => {
                 let inst = json_str(params.get("inst"), "inst")?;
                 let skill = ops.get_instance_params(&inst);
-                let r = client.execute_skill(&skill, None)?;
+                let r = client.execute_skill_unchecked(&skill, None)?;
                 if r.output.trim() == "null" {
                     Ok(serde_json::Value::Null)
                 } else {
@@ -190,18 +180,18 @@ impl RpcDispatcher {
                 let cell = json_str(params.get("cell"), "cell")?;
                 let view = json_str_or(params.get("view"), "maestro")?;
                 let skill = ops.open_session(&lib, &cell, &view);
-                let r = client.execute_skill(&skill, None)?;
+                let r = client.execute_skill_unchecked(&skill, None)?;
                 Ok(serde_json::json!({ "status": "ok", "session": r.output.trim() }))
             }
             "close_session" => {
                 let session = json_str(params.get("session"), "session")?;
                 let skill = ops.close_session(&session);
-                client.execute_skill(&skill, None)?;
+                client.execute_skill_unchecked(&skill, None)?;
                 Ok(serde_json::json!({ "status": "ok" }))
             }
             "list_sessions" => {
                 let skill = ops.list_sessions();
-                let r = client.execute_skill(&skill, None)?;
+                let r = client.execute_skill_unchecked(&skill, None)?;
                 let parsed: Value = serde_json::from_str(&r.output).map_err(VirtuosoError::Json)?;
                 Ok(parsed)
             }
@@ -209,31 +199,31 @@ impl RpcDispatcher {
                 let name = json_str(params.get("name"), "name")?;
                 let value = json_str(params.get("value"), "value")?;
                 let skill = ops.set_var(&name, &value);
-                client.execute_skill(&skill, None)?;
+                client.execute_skill_unchecked(&skill, None)?;
                 Ok(serde_json::json!({ "status": "ok" }))
             }
             "get_var" => {
                 let name = json_str(params.get("name"), "name")?;
                 let skill = ops.get_var(&name);
-                let r = client.execute_skill(&skill, None)?;
+                let r = client.execute_skill_unchecked(&skill, None)?;
                 Ok(serde_json::json!({ "value": r.output.trim() }))
             }
             "list_vars" => {
                 let skill = ops.list_vars();
-                let r = client.execute_skill(&skill, None)?;
+                let r = client.execute_skill_unchecked(&skill, None)?;
                 let parsed: Value = serde_json::from_str(&r.output).map_err(VirtuosoError::Json)?;
                 Ok(parsed)
             }
             "run" => {
                 let session = json_str(params.get("session"), "session")?;
                 let skill = ops.run_simulation(&session);
-                client.execute_skill(&skill, None)?;
+                client.execute_skill_unchecked(&skill, None)?;
                 Ok(serde_json::json!({ "status": "ok" }))
             }
             "save" => {
                 let session = json_str(params.get("session"), "session")?;
                 let skill = ops.save_setup(&session);
-                client.execute_skill(&skill, None)?;
+                client.execute_skill_unchecked(&skill, None)?;
                 Ok(serde_json::json!({ "status": "ok" }))
             }
             "export" => {
@@ -241,7 +231,7 @@ impl RpcDispatcher {
                 let path = json_str(params.get("path"), "path")?;
                 let test_name = params.get("test_name").and_then(|v| v.as_str());
                 let skill = ops.export_results(&session, &path, test_name, None);
-                client.execute_skill(&skill, None)?;
+                client.execute_skill_unchecked(&skill, None)?;
                 Ok(serde_json::json!({ "status": "ok" }))
             }
             _ => Err(VirtuosoError::Execution(format!(
@@ -256,14 +246,14 @@ impl RpcDispatcher {
         match op {
             "list" => {
                 let skill = ops.list_windows();
-                let r = client.execute_skill(&skill, None)?;
+                let r = client.execute_skill_unchecked(&skill, None)?;
                 let parsed: Value = serde_json::from_str(&r.output).map_err(VirtuosoError::Json)?;
                 Ok(parsed)
             }
             "screenshot" => {
                 let path = json_str(params.get("path"), "path")?;
                 let skill = ops.screenshot(&path);
-                let r = client.execute_skill(&skill, None)?;
+                let r = client.execute_skill_unchecked(&skill, None)?;
                 if r.output.trim().is_empty() || r.output.contains("nil") {
                     Ok(serde_json::json!({ "status": "no-dialog-or-capture-failed" }))
                 } else {
@@ -425,6 +415,7 @@ mod tests {
         let req = RpcRequest {
             method: "schematic.list_instances".into(),
             params: serde_json::json!({}),
+            api_key: None,
         };
         let debug = format!("{:?}", req);
         assert!(

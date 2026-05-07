@@ -30,12 +30,15 @@ pub enum VirtuosoError {
 
     #[error("conflict: {0}")]
     Conflict(String),
+
+    #[error("auth error: {0}")]
+    Auth(String),
 }
 
 impl VirtuosoError {
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::Config(_) => exit_codes::USAGE_ERROR,
+            Self::Config(_) | Self::Auth(_) => exit_codes::USAGE_ERROR,
             Self::NotFound(_) => exit_codes::NOT_FOUND,
             Self::Conflict(_) => exit_codes::CONFLICT,
             Self::Connection(_) | Self::Ssh(_) | Self::Timeout(_) => exit_codes::GENERAL_ERROR,
@@ -54,6 +57,7 @@ impl VirtuosoError {
             Self::Config(_) => "config_error",
             Self::NotFound(_) => "not_found",
             Self::Conflict(_) => "conflict",
+            Self::Auth(_) => "auth_error",
         }
     }
 

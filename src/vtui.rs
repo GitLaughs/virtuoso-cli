@@ -1,5 +1,8 @@
 #![allow(dead_code)]
 
+mod async_runtime;
+mod auth;
+mod capability;
 mod client;
 mod command_log;
 mod commands;
@@ -7,16 +10,19 @@ mod config;
 mod error;
 mod exit_codes;
 mod history;
+mod mcp;
 mod models;
 mod ocean;
 mod output;
 mod rpc;
 mod spectre;
+mod streaming;
 mod transaction;
 mod transport;
 mod tui;
 mod version;
 
+pub use capability::{Capability, CapabilitySet};
 pub use rpc::schema::standard_schema;
 pub use transaction::{SchematicDiff, SchematicSnapshot, TransactionManager};
 

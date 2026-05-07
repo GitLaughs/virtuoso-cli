@@ -1,5 +1,8 @@
 use tracing_subscriber::EnvFilter;
 
+mod async_runtime;
+mod auth;
+mod capability;
 mod client;
 mod command_log;
 mod commands;
@@ -7,11 +10,13 @@ mod config;
 mod error;
 mod exit_codes;
 mod history;
+mod mcp;
 mod models;
 mod ocean;
 mod output;
 mod rpc;
 mod spectre;
+mod streaming;
 #[cfg(test)]
 mod tests;
 mod transaction;
@@ -19,6 +24,7 @@ mod transport;
 mod tui;
 mod version;
 
+pub use auth::Auth;
 pub use rpc::schema::standard_schema;
 pub use transaction::{SchematicDiff, SchematicSnapshot, TransactionManager};
 
@@ -159,6 +165,24 @@ enum Commands {
 
     /// Interactive TUI dashboard
     Tui,
+
+    /// Start stdio-based MCP server for AI agent integration
+    #[command(subcommand)]
+    Mcp(McpCmd),
+}
+
+#[derive(Subcommand)]
+enum McpCmd {
+    /// Run the MCP server (stdio mode)
+    Serve,
+}
+
+impl McpCmd {
+    fn dispatch(&self) -> error::Result<serde_json::Value> {
+        match self {
+            McpCmd::Serve => crate::mcp::server::run().map(|_| serde_json::json!({})),
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -921,6 +945,13 @@ enum SessionCmd {
         #[arg(long, default_value = "50")]
         limit: usize,
     },
+
+    /// Start background heartbeat daemon (pings sessions to detect stale Virtuoso)
+    Heartbeat {
+        /// Heartbeat interval in seconds (default: 30)
+        #[arg(long, default_value = "30")]
+        interval: u64,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1306,7 +1337,13 @@ fn dispatch_rpc(cmd: RpcCmd) -> error::Result<serde_json::Value> {
             let params: serde_json::Value =
                 serde_json::from_str(&params).map_err(crate::error::VirtuosoError::Json)?;
             let client = crate::client::bridge::VirtuosoClient::from_env()?;
-            let request = crate::rpc::dispatcher::RpcRequest { method, params };
+            // Read API key from environment if set (VCLI_API_KEY)
+            let api_key = std::env::var("VCLI_API_KEY").ok().filter(|k| !k.is_empty());
+            let request = crate::rpc::dispatcher::RpcRequest {
+                method,
+                params,
+                api_key,
+            };
             crate::rpc::dispatcher::RpcDispatcher::dispatch(&client, request)
         }
         RpcCmd::Schema => {
@@ -1338,6 +1375,9 @@ fn main() {
         )
         .with_target(false)
         .init();
+
+    // Initialize auth (reads VCLI_API_KEY from env)
+    Auth::init();
 
     let format = match &cli.format {
         Some(FormatArg::Json) => OutputFormat::Json,
@@ -1385,6 +1425,15 @@ fn main() {
                 cmd,
                 limit,
             } => commands::session::history(&id, skill, cmd, limit),
+            SessionCmd::Heartbeat { interval } => {
+                let hb = virtuoso_cli::session::SessionHeartbeat::new(interval);
+                hb.start();
+                tracing::info!("heartbeat daemon started (interval={}s)", interval);
+                // Keep the main thread alive — the heartbeat runs in background
+                loop {
+                    std::thread::park();
+                }
+            }
         },
         Commands::Tx(cmd) => dispatch_tx(cmd),
         Commands::Rpc(cmd) => dispatch_rpc(cmd),
@@ -1401,6 +1450,13 @@ fn main() {
         Commands::Tui => {
             if let Err(e) = tui::run_tui() {
                 eprintln!("TUI error: {e}");
+                std::process::exit(1);
+            }
+            std::process::exit(0);
+        }
+        Commands::Mcp(cmd) => {
+            if let Err(e) = cmd.dispatch() {
+                eprintln!("MCP error: {e}");
                 std::process::exit(1);
             }
             std::process::exit(0);
