@@ -10,6 +10,7 @@ use crate::models::SessionInfo;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
+use tokio::time;
 
 /// Heartbeat state tracked per session.
 #[derive(Debug)]
@@ -33,28 +34,32 @@ impl SessionHeartbeat {
         }
     }
 
-    /// Start the heartbeat loop in a background thread.
-    /// Returns immediately; the thread runs until `stop()` is called or process exits.
+    /// Start the heartbeat loop in a background tokio task.
+    /// Returns immediately; the task runs until `stop()` is called or process exits.
     pub fn start(&self) {
         let interval_secs = self.interval_secs;
         let stop = self.stop_flag.clone();
 
         std::thread::spawn(move || {
-            let interval = Duration::from_secs(interval_secs);
-            tracing::info!("session heartbeat started (interval={}s)", interval_secs);
+            let rt = crate::async_runtime::runtime();
+            rt.block_on(async move {
+                let interval = Duration::from_secs(interval_secs);
+                let mut interval_timer = time::interval(interval);
+                tracing::info!("session heartbeat started (interval={}s)", interval_secs);
 
-            loop {
-                std::thread::sleep(interval);
+                loop {
+                    interval_timer.tick().await;
 
-                if stop.load(Ordering::SeqCst) {
-                    tracing::info!("session heartbeat stopped");
-                    break;
+                    if stop.load(Ordering::SeqCst) {
+                        tracing::info!("session heartbeat stopped");
+                        break;
+                    }
+
+                    if let Err(e) = Self::check_all_sessions() {
+                        tracing::warn!("heartbeat check failed: {e}");
+                    }
                 }
-
-                if let Err(e) = Self::check_all_sessions() {
-                    tracing::warn!("heartbeat check failed: {e}");
-                }
-            }
+            });
         });
     }
 
@@ -64,40 +69,41 @@ impl SessionHeartbeat {
     }
 
     /// Check all local sessions, ping each, and update stale status.
+    /// For stale sessions, attempt reconnection and clear stale flag if successful.
     fn check_all_sessions() -> Result<()> {
         let sessions = SessionInfo::list().map_err(|e| {
             crate::error::VirtuosoError::Execution(format!("failed to list sessions: {e}"))
         })?;
 
         for session in sessions {
-            let state = Self::ping_session(&session);
-            if state.is_stale {
-                tracing::warn!(
-                    "session '{}' on port {} is stale (Virtuoso pid={} may have crashed)",
-                    session.id,
-                    session.port,
-                    session.pid
-                );
-                // Mark session JSON as stale by updating the file
-                if let Err(e) = Self::mark_stale(&session) {
-                    tracing::warn!("failed to mark session '{}' as stale: {e}", session.id);
+            let client = VirtuosoClient::new(&session.host, session.port, 5000);
+            match client.reconnect_session(&session.id) {
+                Ok(true) => {
+                    // Session was stale but Virtuoso reconnected — stale flag already cleared
+                    tracing::debug!(
+                        "session '{}' is alive (was attempting reconnect)",
+                        session.id
+                    );
+                }
+                Ok(false) => {
+                    // Session is still stale — mark it
+                    tracing::warn!(
+                        "session '{}' on port {} is stale (Virtuoso pid={} may have crashed)",
+                        session.id,
+                        session.port,
+                        session.pid
+                    );
+                    if let Err(e) = Self::mark_stale(&session) {
+                        tracing::warn!("failed to mark session '{}' as stale: {e}", session.id);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("failed to check session '{}': {e}", session.id);
                 }
             }
         }
 
         Ok(())
-    }
-
-    /// Ping a single session — returns heartbeat state.
-    fn ping_session(session: &SessionInfo) -> SessionHeartbeatState {
-        let client = VirtuosoClient::new(&session.host, session.port, 5000);
-        let is_alive = client.ping().is_ok();
-
-        SessionHeartbeatState {
-            session_id: session.id.clone(),
-            last_heartbeat: SystemTime::now(),
-            is_stale: !is_alive,
-        }
     }
 
     /// Mark a session as stale by appending `.stale` flag file.

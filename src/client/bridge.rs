@@ -5,7 +5,7 @@ use crate::client::schematic_ops::SchematicOps;
 use crate::client::whitelist::EvalstringWhitelist;
 use crate::client::window_ops::WindowOps;
 use crate::error::{Result, VirtuosoError};
-use crate::models::{ExecutionStatus, VirtuosoResult};
+use crate::models::{ExecutionStatus, SessionInfo, VirtuosoResult};
 use crate::transport::tunnel::SSHClient;
 use crate::version::VirtuosoVersion;
 use crate::SchematicDiff;
@@ -529,6 +529,32 @@ impl VirtuosoClient {
         use crate::models::SessionInfo;
         let dir = SessionInfo::sessions_dir();
         dir.join(format!("{}.stale", session_id)).exists()
+    }
+
+    /// Attempt to reconnect to a session — ping Virtuoso and clear stale flag if alive.
+    /// Returns Ok(true) if session is now alive, Ok(false) if still stale.
+    pub fn reconnect_session(&self, session_id: &str) -> Result<bool> {
+        // Try to ping Virtuoso on this client's port
+        match self.ping() {
+            Ok(()) => {
+                // Session is alive — clear stale flag if it was set
+                if Self::session_is_stale(session_id) {
+                    let dir = SessionInfo::sessions_dir();
+                    let stale_flag = dir.join(format!("{}.stale", session_id));
+                    if stale_flag.exists() {
+                        std::fs::remove_file(&stale_flag).map_err(|e| {
+                            VirtuosoError::Execution(format!("failed to remove stale flag: {e}"))
+                        })?;
+                    }
+                    tracing::info!("session '{}' reconnected, stale flag cleared", session_id);
+                }
+                Ok(true)
+            }
+            Err(_) => {
+                // Session still unreachable
+                Ok(false)
+            }
+        }
     }
 }
 
