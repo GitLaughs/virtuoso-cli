@@ -3,11 +3,14 @@
 use crate::error::{Result, VirtuosoError};
 use crate::models::{ExecutionStatus, SimulationResult};
 use crate::spectre::jobs::{Job, JobStatus};
+use crate::streaming::{JobEvent, JobEventSink};
 use crate::transport::ssh::SSHRunner;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::thread;
 use uuid::Uuid;
 
 pub struct SpectreSimulator {
@@ -20,6 +23,7 @@ pub struct SpectreSimulator {
     pub ssh_runner: Option<SSHRunner>,
     pub remote_work_dir: Option<String>,
     pub keep_remote_files: bool,
+    sink: Arc<dyn JobEventSink>,
 }
 
 impl SpectreSimulator {
@@ -54,7 +58,13 @@ impl SpectreSimulator {
             ssh_runner,
             remote_work_dir: None,
             keep_remote_files: cfg.keep_remote_files,
+            sink: Arc::new(crate::streaming::NullSink),
         })
+    }
+
+    pub fn with_sink(mut self, sink: Arc<dyn JobEventSink>) -> Self {
+        self.sink = sink;
+        self
     }
 
     pub fn run_simulation(
@@ -244,13 +254,54 @@ impl SpectreSimulator {
             cmd.arg(arg);
         }
 
+        // Emit started event
+        self.sink.emit(JobEvent::Started {
+            job_id: run_id.clone(),
+            created: chrono::Local::now().to_rfc3339(),
+        });
+
         let mut child = cmd
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| VirtuosoError::Execution(format!("spectre failed to start: {e}")))?;
 
+        let sink = Arc::clone(&self.sink);
+        let log_path_for_thread = log_path.clone();
+        let job_id_for_thread = run_id.clone();
+
+        // Spawn progress tracking thread
+        let progress_thread = thread::spawn(move || {
+            let poll_interval = std::time::Duration::from_millis(500);
+            loop {
+                thread::sleep(poll_interval);
+
+                // Parse log for progress
+                if let Ok(content) = fs::read_to_string(&log_path_for_thread) {
+                    // Check if simulation is done
+                    if content.contains("Simulation completed")
+                        || content.contains("成就")
+                        || content.contains("Error:")
+                        || content.contains("Failed")
+                    {
+                        break;
+                    }
+
+                    if let Some((percent, message)) = parse_spectre_progress(&content) {
+                        sink.emit(JobEvent::Progress {
+                            job_id: job_id_for_thread.clone(),
+                            percent,
+                            message,
+                            iteration: None,
+                            time_point: None,
+                        });
+                    }
+                }
+            }
+        });
+
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(self.timeout);
+        let start_time = std::time::Instant::now();
         let status = loop {
             match child.try_wait() {
                 Ok(Some(s)) => break s,
@@ -258,21 +309,31 @@ impl SpectreSimulator {
                     if std::time::Instant::now() > deadline {
                         let _ = child.kill();
                         let _ = child.wait();
+                        let _ = progress_thread.join();
                         return Err(VirtuosoError::Timeout(self.timeout));
                     }
                     std::thread::sleep(std::time::Duration::from_millis(500));
                 }
                 Err(e) => {
+                    let _ = progress_thread.join();
                     return Err(VirtuosoError::Execution(format!(
                         "failed to wait on spectre: {e}"
-                    )))
+                    )));
                 }
             }
         };
 
+        // Wait for progress thread to finish
+        let _ = progress_thread.join();
+
+        let duration_ms = start_time.elapsed().as_millis() as u64;
         let log_content = fs::read_to_string(&log_path).unwrap_or_default();
 
         if !status.success() {
+            self.sink.emit(JobEvent::Failed {
+                job_id: run_id.clone(),
+                error: format!("spectre exited with code {:?}", status.code()),
+            });
             return Ok(SimulationResult {
                 status: ExecutionStatus::Error,
                 tool_version: None,
@@ -288,6 +349,12 @@ impl SpectreSimulator {
         } else {
             HashMap::new()
         };
+
+        self.sink.emit(JobEvent::Completed {
+            job_id: run_id.clone(),
+            duration_ms,
+            errors: Vec::new(),
+        });
 
         Ok(SimulationResult {
             status: ExecutionStatus::Success,
@@ -373,4 +440,137 @@ impl SpectreSimulator {
 
         Ok(sim_result)
     }
+}
+
+/// Parse spectre log output for progress information.
+/// Returns (percent, message) if progress was found.
+fn parse_spectre_progress(log_content: &str) -> Option<(f32, String)> {
+    // Spectre outputs progress via +logstatus in formats like:
+    // "Time: 1.23e-6 s" or "Time: 123.456u" or "Iteration: 1234"
+    // We look for the last occurrence of these patterns.
+
+    let lines: Vec<&str> = log_content.lines().collect();
+
+    // Look for time progress patterns
+    // Example: "Time: 1.23e-6 s" or "Time: 123.456u"
+    let mut last_time: Option<String> = None;
+    let mut last_iteration: Option<u64> = None;
+
+    for line in lines.iter().rev() {
+        let line = line.trim();
+
+        // Match time patterns like "Time: 1.23e-6 s" or "Time: 123.456u"
+        if let Some(time_val) = line.strip_prefix("Time:") {
+            let time_val = time_val.trim().trim_end_matches('s').trim();
+            last_time = Some(time_val.to_string());
+        }
+
+        // Match iteration patterns like "Iteration: 1234"
+        if let Some(iter_str) = line.strip_prefix("Iteration:") {
+            if let Ok(iter) = iter_str.trim().parse::<u64>() {
+                last_iteration = Some(iter);
+            }
+        }
+
+        // Once we have both time and iteration, we can stop
+        if last_time.is_some() && last_iteration.is_some() {
+            break;
+        }
+    }
+
+    if let (Some(time), Some(iter)) = (last_time, last_iteration) {
+        // Estimate progress based on typical simulation time
+        // Fortran format output style: "t=1200u/3n" or similar
+        let message = format!("t={}, iter={}", time, iter);
+
+        // Try to extract a rough percentage from the message
+        // Common patterns: "t=X/Y" where Y is the end time
+        let percent = if let Some((current, total)) = parse_time_ratio(&message) {
+            (current / total * 100.0).min(100.0) as f32
+        } else {
+            // Fallback: just use iteration count as a rough indicator
+            // without knowing the total, we can only indicate activity
+            50.0
+        };
+
+        return Some((percent, message));
+    }
+
+    // If no time/iteration found, check for generic progress indicators
+    for line in lines.iter().rev() {
+        let line = line.trim();
+        if line.contains("Progress:") || line.contains("progress:") {
+            if let Some(pct) = extract_percent(line) {
+                return Some((pct, line.to_string()));
+            }
+        }
+    }
+
+    // Check for completion or error keywords
+    if log_content.contains("Simulation completed") || log_content.contains("成就") {
+        return Some((100.0, "completed".to_string()));
+    }
+
+    None
+}
+
+/// Parse time ratio from messages like "t=1200u/3n".
+fn parse_time_ratio(msg: &str) -> Option<(f64, f64)> {
+    // Look for pattern like "t=1200u/3n" or "t=1.2e-6/3e-6"
+    if let Some(start) = msg.find("t=") {
+        let after_t = &msg[start + 2..];
+        if let Some(slash) = after_t.find('/') {
+            let current = &after_t[..slash];
+            let total = &after_t[slash + 1..];
+            if let (Some(c), Some(t)) = (parse_time_value(current), parse_time_value(total)) {
+                if t > 0.0 {
+                    return Some((c, t));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Parse a time value like "1200u", "3n", "1.2e-6" into f64 (in seconds).
+fn parse_time_value(s: &str) -> Option<f64> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Some(0.0);
+    }
+
+    // Check for unit suffix
+    let (num_str, unit) = if let Some(idx) =
+        s.find(|c: char| !c.is_numeric() && c != '.' && c != '-' && c != 'e' && c != 'E')
+    {
+        (&s[..idx], &s[idx..])
+    } else {
+        (s, "")
+    };
+
+    let value: f64 = num_str.parse().ok()?;
+
+    Some(match unit {
+        "f" => value * 1e-15,
+        "p" => value * 1e-12,
+        "n" => value * 1e-9,
+        "u" => value * 1e-6,
+        "m" => value * 1e-3,
+        "" => value,
+        _ => value, // Assume base unit if unknown
+    })
+}
+
+/// Extract percentage from a string like "Progress: 45%"
+fn extract_percent(s: &str) -> Option<f32> {
+    // Look for number followed by %
+    if let Some(idx) = s.find(|c: char| c.is_numeric()) {
+        let rest = &s[idx..];
+        if let Some(end) = rest.find('%') {
+            if let Ok(pct) = rest[..end].trim().parse::<f32>() {
+                return Some(pct.min(100.0).max(0.0));
+            }
+        }
+    }
+    None
 }
