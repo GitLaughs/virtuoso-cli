@@ -149,7 +149,7 @@ impl SchematicDiff {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::transaction::snapshot::{InstanceSnapshot, PinSnapshot, SchematicSnapshot};
+    use crate::transaction::snapshot::{InstanceSnapshot, SchematicSnapshot};
     use std::collections::HashMap;
 
     fn make_snapshot(
