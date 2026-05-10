@@ -31,12 +31,13 @@ fn parse_skill_json(output: &str) -> Result<Value> {
     // output is like: "\"[{\\\"name\\\":\\\"M1\\\"}]\""
     // Step 1: strip outer quotes from SKILL string
     let s = output.trim_matches('"');
-    // Step 2: try parsing directly (works if no extra escaping)
-    if let Ok(v) = serde_json::from_str(s) {
+    // Step 2: fix SKILL octal escapes (\256 → \u00AE) and try parsing directly
+    let fixed = fix_skill_octal_escapes(s);
+    if let Ok(v) = serde_json::from_str(&fixed) {
         return Ok(v);
     }
     // Step 3: unescape \" → " and \\\\ → \ then retry
-    let unescaped = s.replace("\\\"", "\"").replace("\\\\", "\\");
+    let unescaped = fixed.replace("\\\"", "\"").replace("\\\\", "\\");
     serde_json::from_str(&unescaped).map_err(|e| {
         VirtuosoError::Execution(format!(
             "Failed to parse SKILL JSON output: {e}. Raw: {output}"
@@ -340,7 +341,8 @@ impl RpcDispatcher {
             "get_current_session" => {
                 let skill = ops.get_current_session();
                 let r = client.execute_skill_unchecked(&skill, None)?;
-                let session = r.output.trim();
+                // SKILL returns: "nil" (quoted) when no session
+                let session = r.output.trim().trim_matches('"');
                 if session == "nil" {
                     Ok(serde_json::json!({ "session": null }))
                 } else {
@@ -401,9 +403,7 @@ impl RpcDispatcher {
             "list" => {
                 let skill = ops.list_windows();
                 let r = client.execute_skill_unchecked(&skill, None)?;
-                let fixed = fix_skill_octal_escapes(&r.output);
-                let parsed: Value = serde_json::from_str(&fixed).map_err(VirtuosoError::Json)?;
-                Ok(parsed)
+                parse_skill_json(&r.output)
             }
             "screenshot" => {
                 let path = json_str(params.get("path"), "path")?;
