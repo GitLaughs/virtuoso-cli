@@ -58,7 +58,8 @@ pub fn parse_ic_version(version_str: &str) -> VirtuosoVersion {
 /// Tries getVersion(t) first (IC23/IC25), falls back to getVersionString() (if available).
 pub fn detect_version(client: &VirtuosoClient) -> Result<VirtuosoVersion> {
     // getVersion(t) returns e.g. "sub-version  IC25.1-64b.ISR4.49 "
-    let result = client.execute_skill("getVersion(t)", None)?;
+    // Use execute_skill_unchecked to avoid auth check (internal operation)
+    let result = client.execute_skill_unchecked("getVersion(t)", None)?;
     if result.ok() {
         let version_str = result.output.trim().trim_matches('"');
         if !version_str.is_empty() && version_str != "nil" {
@@ -66,7 +67,7 @@ pub fn detect_version(client: &VirtuosoClient) -> Result<VirtuosoVersion> {
         }
     }
     // Fallback: some builds may have getVersionString()
-    let result2 = client.execute_skill("getVersionString()", None)?;
+    let result2 = client.execute_skill_unchecked("getVersionString()", None)?;
     if result2.ok() {
         let version_str = result2.output.trim().trim_matches('"');
         if !version_str.is_empty() && version_str != "nil" {

@@ -107,6 +107,8 @@ impl RpcDispatcher {
             "cell" => Self::dispatch_cell(client, op, params),
             "tx" => Self::dispatch_tx(client, op, params),
             "file" => Self::dispatch_file(client, op, params),
+            "util" => Self::dispatch_util(client, op, params),
+            "skill" => Self::dispatch_skill(client, op, params),
             _ => {
                 // Try plugin registry for unknown domains
                 match crate::plugins::PluginRegistry::get_global() {
@@ -574,6 +576,65 @@ impl RpcDispatcher {
             ))),
         }
     }
+
+    fn dispatch_util(client: &VirtuosoClient, op: &str, params: Value) -> Result<Value> {
+        match op {
+            "version" => {
+                let version = client.version()?;
+                Ok(serde_json::json!({
+                    "version": format!("{:?}", version),
+                    "is_ic25": version.is_ic25(),
+                }))
+            }
+            "ping" => {
+                // Use execute_skill_unchecked to avoid auth check for internal operations
+                let r = client.execute_skill_unchecked("ipcIsProcessRunning()", Some(5000))?;
+                if r.skill_ok() {
+                    Ok(serde_json::json!({ "status": "ok" }))
+                } else {
+                    Err(VirtuosoError::Execution("ping failed".into()))
+                }
+            }
+            "ciw_print" => {
+                let message = json_str(params.get("message"), "message")?;
+                let r = client.execute_skill_unchecked(
+                    &format!("println(\"{}\")", escape_skill_string(&message)),
+                    None,
+                )?;
+                Ok(serde_json::json!({ "status": "ok", "output": r.output.trim() }))
+            }
+            "reconnect" => {
+                let session = json_str(params.get("session"), "session")?;
+                let success = client.reconnect_session(&session)?;
+                Ok(serde_json::json!({ "status": if success { "ok" } else { "failed" } }))
+            }
+            _ => Err(VirtuosoError::Execution(format!(
+                "unknown util method '{}'",
+                op
+            ))),
+        }
+    }
+
+    fn dispatch_skill(client: &VirtuosoClient, op: &str, params: Value) -> Result<Value> {
+        match op {
+            "exec" => {
+                // Admin capability is checked by execute_skill (not execute_skill_unchecked)
+                let code = json_str(params.get("code"), "code")?;
+                let timeout = params.get("timeout").and_then(|v| v.as_u64());
+                let r = client.execute_skill(&code, timeout)?;
+                Ok(serde_json::json!({ "output": r.output.trim() }))
+            }
+            "load" => {
+                let path = json_str(params.get("path"), "path")?;
+                let r = client.load_il(&path)?;
+                Ok(serde_json::json!({ "status": "ok", "output": r.output.trim() }))
+            }
+            _ => Err(VirtuosoError::Execution(format!(
+                "unknown skill method '{}'",
+                op
+            ))),
+        }
+    }
 }
 
 // ── JSON helpers ──────────────────────────────────────────────────────
@@ -974,8 +1035,52 @@ mod tests {
     #[test]
     fn schema_total_method_count() {
         let schema = standard_schema();
-        // Should have 52 methods total
-        assert_eq!(schema.methods.len(), 52, "should have exactly 52 methods");
+        // Should have 58 methods total (52 + 6 new: 4 util + 2 skill)
+        assert_eq!(schema.methods.len(), 58, "should have exactly 58 methods");
+    }
+
+    #[test]
+    fn schema_contains_util_methods() {
+        let schema = standard_schema();
+        let names: Vec<&str> = schema.methods.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"util.version"), "should have util.version");
+        assert!(names.contains(&"util.ping"), "should have util.ping");
+        assert!(
+            names.contains(&"util.ciw_print"),
+            "should have util.ciw_print"
+        );
+        assert!(
+            names.contains(&"util.reconnect"),
+            "should have util.reconnect"
+        );
+    }
+
+    #[test]
+    fn schema_contains_skill_methods() {
+        let schema = standard_schema();
+        let names: Vec<&str> = schema.methods.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"skill.exec"), "should have skill.exec");
+        assert!(names.contains(&"skill.load"), "should have skill.load");
+    }
+
+    #[test]
+    fn schema_skill_exec_params() {
+        let schema = standard_schema();
+        let exec = schema
+            .methods
+            .iter()
+            .find(|m| m.name == "skill.exec")
+            .unwrap();
+        assert!(
+            exec.params.iter().any(|p| p.name == "code" && p.required),
+            "code should be required"
+        );
+        assert!(
+            exec.params
+                .iter()
+                .any(|p| p.name == "timeout" && !p.required),
+            "timeout should be optional"
+        );
     }
 
     #[test]

@@ -784,5 +784,71 @@ pub fn standard_schema() -> RpcSchema {
             ],
             returns: "null on success".into(),
         },
+        // ── Utility ──────────────────────────────────────────────────
+        Method {
+            name: "util.version".into(),
+            summary: "Get Virtuoso version info".into(),
+            params: vec![],
+            returns: "version object with is_ic23/is_ic25 flags".into(),
+        },
+        Method {
+            name: "util.ping".into(),
+            summary: "Check connection to Virtuoso".into(),
+            params: vec![],
+            returns: "ok on success".into(),
+        },
+        Method {
+            name: "util.ciw_print".into(),
+            summary: "Print message to CIW console".into(),
+            params: vec![Param {
+                name: "message".into(),
+                ptype: "string".into(),
+                description: "Message to print".into(),
+                required: true,
+            }],
+            returns: "null on success".into(),
+        },
+        Method {
+            name: "util.reconnect".into(),
+            summary: "Reconnect to a session".into(),
+            params: vec![Param {
+                name: "session".into(),
+                ptype: "string".into(),
+                description: "Session ID".into(),
+                required: true,
+            }],
+            returns: "ok/failed status".into(),
+        },
+        // ── Skill ───────────────────────────────────────────────────
+        Method {
+            name: "skill.exec".into(),
+            summary: "Execute raw SKILL code (Admin only)".into(),
+            params: vec![
+                Param {
+                    name: "code".into(),
+                    ptype: "string".into(),
+                    description: "SKILL code to execute".into(),
+                    required: true,
+                },
+                Param {
+                    name: "timeout".into(),
+                    ptype: "integer".into(),
+                    description: "Timeout in seconds (optional)".into(),
+                    required: false,
+                },
+            ],
+            returns: "SKILL output".into(),
+        },
+        Method {
+            name: "skill.load".into(),
+            summary: "Load a SKILL (.il) file".into(),
+            params: vec![Param {
+                name: "path".into(),
+                ptype: "string".into(),
+                description: "Path to .il file".into(),
+                required: true,
+            }],
+            returns: "null on success".into(),
+        },
     ])
 }

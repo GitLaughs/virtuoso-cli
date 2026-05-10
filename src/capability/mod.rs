@@ -95,7 +95,9 @@ impl CapabilitySet {
             "window" => self.permits(Capability::Window),
             "cell" => self.permits(Capability::Cell),
             "tx" => self.permits(Capability::Transaction),
-            "file" => true, // File operations require full access
+            "file" => true,                     // File operations require full access
+            "util" => true,                     // Utility methods are always allowed
+            "skill" => self.allows_raw_skill(), // Only Admin can execute raw SKILL
             _ => false,
         }
     }
@@ -152,6 +154,23 @@ mod tests {
     }
 
     #[test]
+    fn permits_util_methods() {
+        let caps = CapabilitySet(HashSet::from([Capability::Schematic]));
+        // util methods should be permitted with any capability
+        assert!(caps.permits_method("util.version"));
+        assert!(caps.permits_method("util.ping"));
+        assert!(caps.permits_method("util.ciw_print"));
+    }
+
+    #[test]
+    fn skill_methods_require_admin() {
+        let caps = CapabilitySet(HashSet::from([Capability::Schematic]));
+        // skill methods should NOT be permitted without Admin
+        assert!(!caps.permits_method("skill.exec"));
+        assert!(!caps.permits_method("skill.load"));
+    }
+
+    #[test]
     fn admin_allows_everything() {
         let caps = CapabilitySet(HashSet::from([Capability::Admin]));
         assert!(caps.permits_method("schematic.place"));
@@ -160,6 +179,8 @@ mod tests {
         assert!(caps.permits_method("cell.open"));
         assert!(caps.permits_method("tx.begin"));
         assert!(caps.permits_method("file.upload"));
+        assert!(caps.permits_method("util.version"));
+        assert!(caps.permits_method("skill.exec"));
     }
 
     #[test]
