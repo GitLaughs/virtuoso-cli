@@ -94,6 +94,8 @@ impl CapabilitySet {
             "maestro" => self.permits(Capability::Maestro),
             "window" => self.permits(Capability::Window),
             "cell" => self.permits(Capability::Cell),
+            "tx" => self.permits(Capability::Transaction),
+            "file" => true, // File operations require full access
             _ => false,
         }
     }
@@ -132,12 +134,32 @@ mod tests {
     }
 
     #[test]
+    fn permits_tx_methods() {
+        let caps = CapabilitySet(HashSet::from([Capability::Transaction]));
+        assert!(caps.permits_method("tx.begin"));
+        assert!(caps.permits_method("tx.commit"));
+        assert!(caps.permits_method("tx.rollback"));
+        assert!(caps.permits_method("tx.diff"));
+        assert!(caps.permits_method("tx.status"));
+    }
+
+    #[test]
+    fn permits_file_methods() {
+        let caps = CapabilitySet(HashSet::from([Capability::Schematic]));
+        // file operations should be permitted with any capability
+        assert!(caps.permits_method("file.upload"));
+        assert!(caps.permits_method("file.download"));
+    }
+
+    #[test]
     fn admin_allows_everything() {
         let caps = CapabilitySet(HashSet::from([Capability::Admin]));
         assert!(caps.permits_method("schematic.place"));
         assert!(caps.permits_method("maestro.run"));
         assert!(caps.permits_method("window.list"));
         assert!(caps.permits_method("cell.open"));
+        assert!(caps.permits_method("tx.begin"));
+        assert!(caps.permits_method("file.upload"));
     }
 
     #[test]

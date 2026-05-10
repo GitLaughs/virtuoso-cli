@@ -14,6 +14,7 @@ pub mod tools;
 /// MCP server configuration.
 #[derive(Debug, Clone)]
 pub struct McpConfig {
+    #[allow(dead_code)]
     pub capabilities: crate::capability::CapabilitySet,
 }
 
@@ -28,6 +29,7 @@ impl McpConfig {
 /// MCP request envelope (JSON-RPC 2.0).
 #[derive(Debug, Deserialize)]
 pub struct McpRequest {
+    #[allow(dead_code)]
     jsonrpc: String,
     method: String,
     params: serde_json::Value,
@@ -77,6 +79,7 @@ impl McpResponse {
 
 /// MCP server that reads JSON-RPC requests from stdin and writes responses to stdout.
 pub struct McpServer {
+    #[allow(dead_code)]
     config: McpConfig,
     tools: Vec<tools::McpTool>,
 }

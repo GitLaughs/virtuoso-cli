@@ -418,4 +418,64 @@ mod tests {
     fn json_to_skill_alist_non_object_returns_err() {
         assert!(json_to_skill_alist("[1,2,3]").is_err());
     }
+
+    #[test]
+    fn get_output_value_without_corner() {
+        let s = ops().get_output_value("gain", "AC", None);
+        assert!(s.contains("maeGetOutputValue"), "{s}");
+        assert!(s.contains("\"gain\""), "{s}");
+        assert!(s.contains("\"AC\""), "{s}");
+        assert!(
+            !s.contains("?cornerName"),
+            "should not have cornerName when None: {s}"
+        );
+    }
+
+    #[test]
+    fn get_output_value_with_corner() {
+        let s = ops().get_output_value("gain", "AC", Some("tt"));
+        assert!(s.contains("maeGetOutputValue"), "{s}");
+        assert!(s.contains("?cornerName"), "should have cornerName: {s}");
+        assert!(s.contains("\"tt\""), "{s}");
+    }
+
+    #[test]
+    fn get_spec_status() {
+        let s = ops().get_spec_status("gain", "AC");
+        assert!(s.contains("maeGetSpecStatus"), "{s}");
+        assert!(s.contains("\"gain\""), "{s}");
+        assert!(s.contains("\"AC\""), "{s}");
+    }
+
+    #[test]
+    fn get_current_session() {
+        let s = ops().get_current_session();
+        assert!(s.contains("asiGetCurrentSession"), "{s}");
+        assert!(s.contains("sess~>name"), "{s}");
+    }
+
+    #[test]
+    fn get_result_outputs() {
+        let s = ops().get_result_outputs("AC");
+        assert!(s.contains("maeGetResultOutputs"), "{s}");
+        assert!(s.contains("\"AC\""), "{s}");
+        assert!(s.contains("foreach"), "{s}");
+    }
+
+    #[test]
+    fn set_design() {
+        let s = ops().set_design("sess1", "myLib", "myCell", "schematic");
+        assert!(s.contains("maeSetDesign"), "{s}");
+        assert!(s.contains("?session"), "{s}");
+        assert!(s.contains("?libName"), "{s}");
+        assert!(s.contains("?cellName"), "{s}");
+        assert!(s.contains("?viewName"), "{s}");
+    }
+
+    #[test]
+    fn save_setup() {
+        let s = ops().save_setup("sess1");
+        assert!(s.contains("maeSaveSetup"), "{s}");
+        assert!(s.contains("?session"), "{s}");
+    }
 }

@@ -57,3 +57,65 @@ impl WindowOps {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_windows_contains_hiGetWindowList() {
+        let ops = WindowOps;
+        let skill = ops.list_windows();
+        assert!(
+            skill.contains("hiGetWindowList"),
+            "should use hiGetWindowList"
+        );
+        assert!(
+            skill.contains("hiGetWindowName"),
+            "should use hiGetWindowName"
+        );
+    }
+
+    #[test]
+    fn dismiss_dialog_cancel() {
+        let ops = WindowOps;
+        let skill = ops.dismiss_dialog("cancel");
+        assert!(skill.contains("hiGetCurrentDialog"), "should check dialog");
+        assert!(skill.contains("hiCancelDialog"), "should cancel dialog");
+        assert!(skill.contains("no-dialog"), "should handle no dialog");
+    }
+
+    #[test]
+    fn dismiss_dialog_ok() {
+        let ops = WindowOps;
+        let skill = ops.dismiss_dialog("ok");
+        assert!(skill.contains("hiSendOK"), "should send OK");
+    }
+
+    #[test]
+    fn get_dialog_info() {
+        let ops = WindowOps;
+        let skill = ops.get_dialog_info();
+        assert!(skill.contains("hiGetCurrentDialog"), "should check dialog");
+        assert!(skill.contains("hiGetWindowName"), "should get window name");
+    }
+
+    #[test]
+    fn screenshot_escapes_path() {
+        let ops = WindowOps;
+        let skill = ops.screenshot("/path/with spaces/screen.png");
+        assert!(
+            skill.contains("import -window root -silent"),
+            "should use import"
+        );
+        assert!(skill.contains("fileexists"), "should verify file");
+    }
+
+    #[test]
+    fn screenshot_by_pattern_escapes_pattern() {
+        let ops = WindowOps;
+        let skill = ops.screenshot_by_pattern("/tmp/screen.png", "Library Manager");
+        assert!(skill.contains("rexMatchp"), "should use regex match");
+        assert!(skill.contains("no-match"), "should handle no match");
+    }
+}

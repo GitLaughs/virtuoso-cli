@@ -241,6 +241,42 @@ pub fn standard_schema() -> RpcSchema {
             }],
             returns: "file path on success".into(),
         },
+        Method {
+            name: "window.screenshot_by_pattern".into(),
+            summary: "Capture screenshot of window matching regex pattern".into(),
+            params: vec![
+                Param {
+                    name: "path".into(),
+                    ptype: "string".into(),
+                    description: "Output PNG file path".into(),
+                    required: true,
+                },
+                Param {
+                    name: "pattern".into(),
+                    ptype: "string".into(),
+                    description: "Regex pattern to match window name".into(),
+                    required: true,
+                },
+            ],
+            returns: "file path on success, or no-match".into(),
+        },
+        Method {
+            name: "window.dismiss_dialog".into(),
+            summary: "Dismiss the current blocking dialog".into(),
+            params: vec![Param {
+                name: "action".into(),
+                ptype: "string".into(),
+                description: "Action: 'ok' or 'cancel'".into(),
+                required: false,
+            }],
+            returns: "action taken or no-dialog".into(),
+        },
+        Method {
+            name: "window.get_dialog_info".into(),
+            summary: "Get current dialog name without dismissing".into(),
+            params: vec![],
+            returns: "dialog name or null".into(),
+        },
         // ── Cell ─────────────────────────────────────────────────────
         Method {
             name: "cell.open".into(),
@@ -290,6 +326,31 @@ pub fn standard_schema() -> RpcSchema {
             summary: "Get current cellview info (lib/cell/view)".into(),
             params: vec![],
             returns: "JSON object with lib, cell, view".into(),
+        },
+        Method {
+            name: "cell.create".into(),
+            summary: "Create a new cellview".into(),
+            params: vec![
+                Param {
+                    name: "lib".into(),
+                    ptype: "string".into(),
+                    description: "Library name".into(),
+                    required: true,
+                },
+                Param {
+                    name: "cell".into(),
+                    ptype: "string".into(),
+                    description: "Cell name".into(),
+                    required: true,
+                },
+                Param {
+                    name: "view".into(),
+                    ptype: "string".into(),
+                    description: "View name".into(),
+                    required: false,
+                },
+            ],
+            returns: "null on success".into(),
         },
         // ── Maestro ───────────────────────────────────────────────────
         Method {
@@ -510,6 +571,218 @@ pub fn standard_schema() -> RpcSchema {
                 required: true,
             }],
             returns: "messages string".into(),
+        },
+        Method {
+            name: "maestro.set_analysis".into(),
+            summary: "Set simulation analysis parameters".into(),
+            params: vec![
+                Param {
+                    name: "session".into(),
+                    ptype: "string".into(),
+                    description: "Session ID".into(),
+                    required: true,
+                },
+                Param {
+                    name: "type".into(),
+                    ptype: "string".into(),
+                    description: "Analysis type (e.g. ac, tran, dc)".into(),
+                    required: true,
+                },
+                Param {
+                    name: "options".into(),
+                    ptype: "string".into(),
+                    description: "Options alist (e.g. '((freq \"1k\"))')".into(),
+                    required: false,
+                },
+            ],
+            returns: "null on success".into(),
+        },
+        Method {
+            name: "maestro.add_output".into(),
+            summary: "Add a measurement output".into(),
+            params: vec![
+                Param {
+                    name: "name".into(),
+                    ptype: "string".into(),
+                    description: "Output name".into(),
+                    required: true,
+                },
+                Param {
+                    name: "test".into(),
+                    ptype: "string".into(),
+                    description: "Test name".into(),
+                    required: true,
+                },
+                Param {
+                    name: "expr".into(),
+                    ptype: "string".into(),
+                    description: "Expression (e.g. bandwidth(vf(\"/out\") 3))".into(),
+                    required: true,
+                },
+            ],
+            returns: "null on success".into(),
+        },
+        Method {
+            name: "maestro.set_design".into(),
+            summary: "Set the simulation design target".into(),
+            params: vec![
+                Param {
+                    name: "session".into(),
+                    ptype: "string".into(),
+                    description: "Session ID".into(),
+                    required: true,
+                },
+                Param {
+                    name: "lib".into(),
+                    ptype: "string".into(),
+                    description: "Library name".into(),
+                    required: true,
+                },
+                Param {
+                    name: "cell".into(),
+                    ptype: "string".into(),
+                    description: "Cell name".into(),
+                    required: true,
+                },
+                Param {
+                    name: "view".into(),
+                    ptype: "string".into(),
+                    description: "View name".into(),
+                    required: true,
+                },
+            ],
+            returns: "null on success".into(),
+        },
+        Method {
+            name: "maestro.save_setup".into(),
+            summary: "Save the simulation setup".into(),
+            params: vec![Param {
+                name: "session".into(),
+                ptype: "string".into(),
+                description: "Session ID".into(),
+                required: true,
+            }],
+            returns: "null on success".into(),
+        },
+        Method {
+            name: "maestro.get_spec_status".into(),
+            summary: "Get spec pass/fail status for an output".into(),
+            params: vec![
+                Param {
+                    name: "name".into(),
+                    ptype: "string".into(),
+                    description: "Output name".into(),
+                    required: true,
+                },
+                Param {
+                    name: "test".into(),
+                    ptype: "string".into(),
+                    description: "Test name".into(),
+                    required: true,
+                },
+            ],
+            returns: "pass/fail status string".into(),
+        },
+        Method {
+            name: "maestro.get_current_session".into(),
+            summary: "Get the current Maestro session name".into(),
+            params: vec![],
+            returns: "session name or null".into(),
+        },
+        // ── Transaction ───────────────────────────────────────────────
+        Method {
+            name: "tx.begin".into(),
+            summary: "Begin a schematic transaction (snapshot)".into(),
+            params: vec![
+                Param {
+                    name: "id".into(),
+                    ptype: "string".into(),
+                    description: "Transaction ID".into(),
+                    required: true,
+                },
+                Param {
+                    name: "lib".into(),
+                    ptype: "string".into(),
+                    description: "Library name".into(),
+                    required: true,
+                },
+                Param {
+                    name: "cell".into(),
+                    ptype: "string".into(),
+                    description: "Cell name".into(),
+                    required: true,
+                },
+                Param {
+                    name: "view".into(),
+                    ptype: "string".into(),
+                    description: "View name".into(),
+                    required: false,
+                },
+            ],
+            returns: "null on success".into(),
+        },
+        Method {
+            name: "tx.commit".into(),
+            summary: "Commit the current transaction".into(),
+            params: vec![],
+            returns: "null on success".into(),
+        },
+        Method {
+            name: "tx.rollback".into(),
+            summary: "Rollback the current transaction".into(),
+            params: vec![],
+            returns: "null on success".into(),
+        },
+        Method {
+            name: "tx.diff".into(),
+            summary: "Get the diff between current and snapshot".into(),
+            params: vec![],
+            returns: "JSON object with added/removed/modified lists".into(),
+        },
+        Method {
+            name: "tx.status".into(),
+            summary: "Get current transaction status".into(),
+            params: vec![],
+            returns: "JSON object with active/id/snapshot info".into(),
+        },
+        // ── File Transfer ─────────────────────────────────────────────
+        Method {
+            name: "file.upload".into(),
+            summary: "Upload a local file to Virtuoso server".into(),
+            params: vec![
+                Param {
+                    name: "local".into(),
+                    ptype: "string".into(),
+                    description: "Local file path".into(),
+                    required: true,
+                },
+                Param {
+                    name: "remote".into(),
+                    ptype: "string".into(),
+                    description: "Remote file path on server".into(),
+                    required: true,
+                },
+            ],
+            returns: "null on success".into(),
+        },
+        Method {
+            name: "file.download".into(),
+            summary: "Download a file from Virtuoso server".into(),
+            params: vec![
+                Param {
+                    name: "remote".into(),
+                    ptype: "string".into(),
+                    description: "Remote file path on server".into(),
+                    required: true,
+                },
+                Param {
+                    name: "local".into(),
+                    ptype: "string".into(),
+                    description: "Local destination path".into(),
+                    required: true,
+                },
+            ],
+            returns: "null on success".into(),
         },
     ])
 }

@@ -73,6 +73,7 @@ pub trait JobEventSink: Send + Sync {
 
 /// Console sink — writes events to stderr as JSON lines.
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct ConsoleSink;
 
 impl JobEventSink for ConsoleSink {
@@ -90,15 +91,18 @@ impl JobEventSink for NullSink {
 }
 
 /// Broadcast sink — fans out to multiple sinks.
+#[allow(dead_code)]
 pub struct BroadcastSink {
     sinks: Vec<Arc<dyn JobEventSink>>,
 }
 
 impl BroadcastSink {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self { sinks: Vec::new() }
     }
 
+    #[allow(dead_code)]
     pub fn add_sink(&mut self, sink: Arc<dyn JobEventSink>) {
         self.sinks.push(sink);
     }
@@ -120,11 +124,13 @@ impl JobEventSink for BroadcastSink {
 
 /// Thread-safe single-consumer event channel.
 /// Uses std::sync::mpsc internally; tokio integration comes in P1-1.
+#[allow(dead_code)]
 pub struct ChannelSink {
     tx: std::sync::Mutex<std::sync::mpsc::Sender<JobEvent>>,
 }
 
 impl ChannelSink {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         let (tx, _) = std::sync::mpsc::channel();
         Self {
@@ -132,6 +138,7 @@ impl ChannelSink {
         }
     }
 
+    #[allow(dead_code)]
     pub fn subscribe(&mut self) -> Receiver {
         let (_, rx) = std::sync::mpsc::channel();
         Receiver { rx }
@@ -153,15 +160,18 @@ impl JobEventSink for ChannelSink {
 }
 
 /// Receiver end of a channel (stub for now).
+#[allow(dead_code)]
 pub struct Receiver {
     rx: std::sync::mpsc::Receiver<JobEvent>,
 }
 
 impl Receiver {
+    #[allow(dead_code)]
     pub fn try_recv(&mut self) -> Result<JobEvent, std::sync::mpsc::TryRecvError> {
         self.rx.try_recv()
     }
 
+    #[allow(dead_code)]
     pub fn recv(&mut self) -> Result<JobEvent, std::sync::mpsc::RecvError> {
         self.rx.recv()
     }

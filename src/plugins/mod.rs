@@ -7,4 +7,3 @@ pub mod registry;
 pub mod schema;
 
 pub use registry::PluginRegistry;
-pub use schema::{ParamDef, PluginTool};

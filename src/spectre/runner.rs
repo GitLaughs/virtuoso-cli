@@ -573,7 +573,7 @@ fn extract_percent(s: &str) -> Option<f32> {
         let rest = &s[idx..];
         if let Some(end) = rest.find('%') {
             if let Ok(pct) = rest[..end].trim().parse::<f32>() {
-                return Some(pct.min(100.0).max(0.0));
+                return Some(pct.clamp(0.0, 100.0));
             }
         }
     }

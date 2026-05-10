@@ -4,7 +4,7 @@
 //! The dispatcher routes the incoming JSON-RPC request to the correct handler.
 
 use crate::auth::{check_auth, log_rpc};
-use crate::client::bridge::VirtuosoClient;
+use crate::client::bridge::{escape_skill_string, VirtuosoClient};
 use crate::error::{Result, VirtuosoError};
 use regex::Regex;
 use serde_json::Value;
@@ -104,6 +104,8 @@ impl RpcDispatcher {
             "maestro" => Self::dispatch_maestro(client, op, params),
             "window" => Self::dispatch_window(client, op, params),
             "cell" => Self::dispatch_cell(client, op, params),
+            "tx" => Self::dispatch_tx(client, op, params),
+            "file" => Self::dispatch_file(client, op, params),
             _ => {
                 // Try plugin registry for unknown domains
                 match crate::plugins::PluginRegistry::get_global() {
@@ -334,6 +336,58 @@ impl RpcDispatcher {
                 let r = client.execute_skill_unchecked(&skill, None)?;
                 Ok(serde_json::json!({ "messages": r.output.trim() }))
             }
+            // ── Session & Setup Management ─────────────────────────────
+            "get_current_session" => {
+                let skill = ops.get_current_session();
+                let r = client.execute_skill_unchecked(&skill, None)?;
+                let session = r.output.trim();
+                if session == "nil" {
+                    Ok(serde_json::json!({ "session": null }))
+                } else {
+                    Ok(serde_json::json!({ "session": session }))
+                }
+            }
+            "set_analysis" => {
+                let session = json_str(params.get("session"), "session")?;
+                let analysis_type = json_str(params.get("type"), "type")?;
+                let options = params.get("options").and_then(|v| v.as_str());
+                let version = client
+                    .version()
+                    .unwrap_or(crate::version::VirtuosoVersion::IC23);
+                let skill = ops.set_analysis(&session, &analysis_type, options, version);
+                let r = client.execute_skill_unchecked(&skill, None)?;
+                Ok(serde_json::json!({ "status": "ok", "output": r.output.trim() }))
+            }
+            "add_output" => {
+                let name = json_str(params.get("name"), "name")?;
+                let test = json_str(params.get("test"), "test")?;
+                let expr = json_str(params.get("expr"), "expr")?;
+                let skill = ops.add_output(&name, &test, &expr);
+                let r = client.execute_skill_unchecked(&skill, None)?;
+                Ok(serde_json::json!({ "status": "ok", "output": r.output.trim() }))
+            }
+            "set_design" => {
+                let session = json_str(params.get("session"), "session")?;
+                let lib = json_str(params.get("lib"), "lib")?;
+                let cell = json_str(params.get("cell"), "cell")?;
+                let view = json_str(params.get("view"), "view")?;
+                let skill = ops.set_design(&session, &lib, &cell, &view);
+                let r = client.execute_skill_unchecked(&skill, None)?;
+                Ok(serde_json::json!({ "status": "ok", "output": r.output.trim() }))
+            }
+            "save_setup" => {
+                let session = json_str(params.get("session"), "session")?;
+                let skill = ops.save_setup(&session);
+                let r = client.execute_skill_unchecked(&skill, None)?;
+                Ok(serde_json::json!({ "status": "ok", "output": r.output.trim() }))
+            }
+            "get_spec_status" => {
+                let name = json_str(params.get("name"), "name")?;
+                let test = json_str(params.get("test"), "test")?;
+                let skill = ops.get_spec_status(&name, &test);
+                let r = client.execute_skill_unchecked(&skill, None)?;
+                Ok(serde_json::json!({ "status": r.output.trim() }))
+            }
             _ => Err(VirtuosoError::Execution(format!(
                 "unknown maestro method '{}'",
                 op
@@ -359,6 +413,41 @@ impl RpcDispatcher {
                     Ok(serde_json::json!({ "status": "no-dialog-or-capture-failed" }))
                 } else {
                     Ok(serde_json::json!({ "status": "ok", "path": r.output.trim() }))
+                }
+            }
+            "screenshot_by_pattern" => {
+                let path = json_str(params.get("path"), "path")?;
+                let pattern = json_str(params.get("pattern"), "pattern")?;
+                let skill = ops.screenshot_by_pattern(&path, &pattern);
+                let r = client.execute_skill_unchecked(&skill, None)?;
+                let out = r.output.trim();
+                if out == "no-match" {
+                    Ok(serde_json::json!({ "status": "no-match" }))
+                } else if out.is_empty() || out == "nil" {
+                    Ok(serde_json::json!({ "status": "capture-failed" }))
+                } else {
+                    Ok(serde_json::json!({ "status": "ok", "path": out }))
+                }
+            }
+            "dismiss_dialog" => {
+                let action = json_str_or(params.get("action"), "cancel")?;
+                let skill = ops.dismiss_dialog(&action);
+                let r = client.execute_skill_unchecked(&skill, None)?;
+                let out = r.output.trim();
+                if out == "no-dialog" {
+                    Ok(serde_json::json!({ "status": "no-dialog" }))
+                } else {
+                    Ok(serde_json::json!({ "status": "ok", "action": out }))
+                }
+            }
+            "get_dialog_info" => {
+                let skill = ops.get_dialog_info();
+                let r = client.execute_skill_unchecked(&skill, None)?;
+                let out = r.output.trim();
+                if out == "no-dialog" {
+                    Ok(serde_json::json!({ "dialog": null }))
+                } else {
+                    Ok(serde_json::json!({ "dialog": out }))
                 }
             }
             _ => Err(VirtuosoError::Execution(format!(
@@ -394,8 +483,93 @@ impl RpcDispatcher {
                     "view": view,
                 }))
             }
+            "create" => {
+                let lib = json_str(params.get("lib"), "lib")?;
+                let cell = json_str(params.get("cell"), "cell")?;
+                let view = json_str_or(params.get("view"), "schematic")?;
+                let skill = format!(
+                    r#"dbCreateCell("{lib}" "{cell}" "{view}")"#,
+                    lib = escape_skill_string(&lib),
+                    cell = escape_skill_string(&cell),
+                    view = escape_skill_string(&view)
+                );
+                let r = client.execute_skill_unchecked(&skill, None)?;
+                Ok(serde_json::json!({ "status": "ok", "output": r.output.trim() }))
+            }
             _ => Err(VirtuosoError::Execution(format!(
                 "unknown cell method '{}'",
+                op
+            ))),
+        }
+    }
+
+    fn dispatch_tx(client: &VirtuosoClient, op: &str, params: Value) -> Result<Value> {
+        match op {
+            "begin" => {
+                let id = json_str(params.get("id"), "id")?;
+                let lib = json_str(params.get("lib"), "lib")?;
+                let cell = json_str(params.get("cell"), "cell")?;
+                let view = json_str_or(params.get("view"), "schematic")?;
+                client.tx_begin(&id, &lib, &cell, &view)?;
+                Ok(serde_json::json!({ "status": "ok", "id": id }))
+            }
+            "commit" => {
+                client.tx_commit()?;
+                Ok(serde_json::json!({ "status": "ok" }))
+            }
+            "rollback" => {
+                client.tx_rollback()?;
+                Ok(serde_json::json!({ "status": "ok" }))
+            }
+            "diff" => {
+                let diff = client.tx_diff()?;
+                Ok(serde_json::json!({
+                    "instances_added": diff.instances_added,
+                    "instances_removed": diff.instances_removed,
+                    "instances_modified": diff.instances_modified,
+                    "nets_added": diff.nets_added,
+                    "nets_removed": diff.nets_removed,
+                    "pins_added": diff.pins_added,
+                    "pins_removed": diff.pins_removed,
+                }))
+            }
+            "status" => match client.tx_status() {
+                Some((id, snap)) => Ok(serde_json::json!({
+                    "active": true,
+                    "id": id,
+                    "snapshot": {
+                        "lib": snap.lib,
+                        "cell": snap.cell,
+                        "view": snap.view,
+                        "instances": snap.instances.len(),
+                        "nets": snap.nets.len(),
+                    }
+                })),
+                None => Ok(serde_json::json!({ "active": false })),
+            },
+            _ => Err(VirtuosoError::Execution(format!(
+                "unknown tx method '{}'",
+                op
+            ))),
+        }
+    }
+
+    fn dispatch_file(client: &VirtuosoClient, op: &str, params: Value) -> Result<Value> {
+        match op {
+            "upload" => {
+                let local = json_str(params.get("local"), "local")?;
+                let remote = json_str(params.get("remote"), "remote")?;
+                client.upload_file(&local, &remote)?;
+                Ok(serde_json::json!({ "status": "ok", "remote": remote }))
+            }
+            "download" => {
+                let remote = json_str(params.get("remote"), "remote")?;
+                let local = json_str(params.get("local"), "local")?;
+                client.download_file(&remote, &local)?;
+                Ok(serde_json::json!({ "status": "ok", "local": local }))
+            }
+            _ => Err(VirtuosoError::Execution(format!(
+                "unknown file method '{}'",
                 op
             ))),
         }
@@ -591,5 +765,246 @@ mod tests {
             .find(|m| m.name == "schematic.save")
             .unwrap();
         assert!(save.params.is_empty(), "save should have no params");
+    }
+
+    #[test]
+    fn schema_contains_tx_methods() {
+        let schema = standard_schema();
+        let names: Vec<&str> = schema.methods.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"tx.begin"), "should have tx.begin");
+        assert!(names.contains(&"tx.commit"), "should have tx.commit");
+        assert!(names.contains(&"tx.rollback"), "should have tx.rollback");
+        assert!(names.contains(&"tx.diff"), "should have tx.diff");
+        assert!(names.contains(&"tx.status"), "should have tx.status");
+    }
+
+    #[test]
+    fn schema_contains_file_methods() {
+        let schema = standard_schema();
+        let names: Vec<&str> = schema.methods.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"file.upload"), "should have file.upload");
+        assert!(
+            names.contains(&"file.download"),
+            "should have file.download"
+        );
+    }
+
+    #[test]
+    fn schema_contains_new_window_methods() {
+        let schema = standard_schema();
+        let names: Vec<&str> = schema.methods.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"window.screenshot_by_pattern"),
+            "should have window.screenshot_by_pattern"
+        );
+        assert!(
+            names.contains(&"window.dismiss_dialog"),
+            "should have window.dismiss_dialog"
+        );
+        assert!(
+            names.contains(&"window.get_dialog_info"),
+            "should have window.get_dialog_info"
+        );
+    }
+
+    #[test]
+    fn schema_contains_new_cell_methods() {
+        let schema = standard_schema();
+        let names: Vec<&str> = schema.methods.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"cell.info"), "should have cell.info");
+        assert!(names.contains(&"cell.create"), "should have cell.create");
+    }
+
+    #[test]
+    fn schema_contains_new_maestro_methods() {
+        let schema = standard_schema();
+        let names: Vec<&str> = schema.methods.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"maestro.set_analysis"),
+            "should have maestro.set_analysis"
+        );
+        assert!(
+            names.contains(&"maestro.add_output"),
+            "should have maestro.add_output"
+        );
+        assert!(
+            names.contains(&"maestro.set_design"),
+            "should have maestro.set_design"
+        );
+        assert!(
+            names.contains(&"maestro.save_setup"),
+            "should have maestro.save_setup"
+        );
+        assert!(
+            names.contains(&"maestro.get_spec_status"),
+            "should have maestro.get_spec_status"
+        );
+        assert!(
+            names.contains(&"maestro.get_current_session"),
+            "should have maestro.get_current_session"
+        );
+        assert!(
+            names.contains(&"maestro.open_results"),
+            "should have maestro.open_results"
+        );
+        assert!(
+            names.contains(&"maestro.close_results"),
+            "should have maestro.close_results"
+        );
+        assert!(
+            names.contains(&"maestro.get_result_tests"),
+            "should have maestro.get_result_tests"
+        );
+        assert!(
+            names.contains(&"maestro.get_result_outputs"),
+            "should have maestro.get_result_outputs"
+        );
+        assert!(
+            names.contains(&"maestro.get_output_value"),
+            "should have maestro.get_output_value"
+        );
+        assert!(
+            names.contains(&"maestro.get_history_list"),
+            "should have maestro.get_history_list"
+        );
+        assert!(
+            names.contains(&"maestro.get_analyses"),
+            "should have maestro.get_analyses"
+        );
+        assert!(
+            names.contains(&"maestro.get_outputs"),
+            "should have maestro.get_outputs"
+        );
+        assert!(
+            names.contains(&"maestro.get_sim_messages"),
+            "should have maestro.get_sim_messages"
+        );
+    }
+
+    #[test]
+    fn schema_tx_begin_params() {
+        let schema = standard_schema();
+        let tx_begin = schema
+            .methods
+            .iter()
+            .find(|m| m.name == "tx.begin")
+            .unwrap();
+        assert!(
+            tx_begin.params.iter().any(|p| p.name == "id" && p.required),
+            "id should be required"
+        );
+        assert!(
+            tx_begin
+                .params
+                .iter()
+                .any(|p| p.name == "lib" && p.required),
+            "lib should be required"
+        );
+        assert!(
+            tx_begin
+                .params
+                .iter()
+                .any(|p| p.name == "cell" && p.required),
+            "cell should be required"
+        );
+        assert!(
+            tx_begin
+                .params
+                .iter()
+                .any(|p| p.name == "view" && !p.required),
+            "view should be optional"
+        );
+    }
+
+    #[test]
+    fn schema_file_upload_params() {
+        let schema = standard_schema();
+        let upload = schema
+            .methods
+            .iter()
+            .find(|m| m.name == "file.upload")
+            .unwrap();
+        assert!(
+            upload
+                .params
+                .iter()
+                .any(|p| p.name == "local" && p.required),
+            "local should be required"
+        );
+        assert!(
+            upload
+                .params
+                .iter()
+                .any(|p| p.name == "remote" && p.required),
+            "remote should be required"
+        );
+    }
+
+    #[test]
+    fn schema_get_output_value_params() {
+        let schema = standard_schema();
+        let get_val = schema
+            .methods
+            .iter()
+            .find(|m| m.name == "maestro.get_output_value")
+            .unwrap();
+        assert!(
+            get_val
+                .params
+                .iter()
+                .any(|p| p.name == "name" && p.required),
+            "name should be required"
+        );
+        assert!(
+            get_val
+                .params
+                .iter()
+                .any(|p| p.name == "test" && p.required),
+            "test should be required"
+        );
+        assert!(
+            get_val
+                .params
+                .iter()
+                .any(|p| p.name == "corner" && !p.required),
+            "corner should be optional"
+        );
+    }
+
+    #[test]
+    fn schema_total_method_count() {
+        let schema = standard_schema();
+        // Should have 52 methods total
+        assert_eq!(schema.methods.len(), 52, "should have exactly 52 methods");
+    }
+
+    #[test]
+    fn parse_skill_json_handles_escaped_quotes() {
+        // SKILL output format: the bridge returns JSON arrays directly from SKILL's sprintf
+        // This test verifies the function can handle standard JSON output
+        let output = r#"[{"name":"M1"}]"#;
+        let result = parse_skill_json(output);
+        assert!(result.is_ok(), "should parse JSON with objects");
+    }
+
+    #[test]
+    fn parse_skill_json_handles_plain_json() {
+        // Direct JSON (no escaping needed)
+        let output = r#"["a", "b"]"#;
+        let result = parse_skill_json(output);
+        assert!(result.is_ok(), "should parse direct JSON");
+        let val = result.unwrap();
+        let arr = val.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+    }
+
+    #[test]
+    fn parse_skill_json_handles_object() {
+        let output = r#"{"name":"M1"}"#;
+        let result = parse_skill_json(output);
+        assert!(result.is_ok(), "should parse JSON object");
+        let val = result.unwrap();
+        let obj = val.as_object().unwrap();
+        assert_eq!(obj.get("name").unwrap().as_str().unwrap(), "M1");
     }
 }

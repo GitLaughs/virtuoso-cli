@@ -4,7 +4,7 @@ use crate::client::bridge::VirtuosoClient;
 use crate::error::{Result, VirtuosoError};
 use crate::mcp::tools::McpTool;
 use crate::rpc::schema::{Method, Param};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
@@ -137,6 +137,7 @@ impl PluginRegistry {
     }
 
     /// Convert plugin tools to RPC schema methods.
+    #[allow(dead_code)]
     pub fn schema_methods(&self) -> Vec<Method> {
         self.tools
             .iter()

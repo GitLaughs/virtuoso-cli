@@ -20,6 +20,7 @@ pub fn runtime() -> &'static Runtime {
 }
 
 /// Get or create a multi-threaded tokio runtime for heavy concurrency.
+#[allow(dead_code)]
 pub fn multi_threaded_runtime() -> &'static Runtime {
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
@@ -31,6 +32,7 @@ pub fn multi_threaded_runtime() -> &'static Runtime {
 }
 
 /// Run a blocking operation in the tokio thread pool.
+#[allow(dead_code)]
 pub fn block_on<F: std::future::Future>(future: F) -> F::Output {
     runtime().block_on(future)
 }
