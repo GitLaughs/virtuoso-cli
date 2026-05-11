@@ -110,3 +110,59 @@ pub fn load(file: &str) -> Result<Value> {
         "errors": result.errors,
     }))
 }
+
+/// Execute inline SKILL expressions — companion to `load` for one-liners.
+///
+/// Wraps input in `progn(\n<user>\n)` to:
+/// - Enable multi-statement execution without wrapping in progn yourself
+/// - Prevent trailing `; comment` from swallowing the closing paren
+///
+/// Supports two input modes:
+/// - `code` provided directly: single expression or multi-line block
+/// - `stdin == true`: read from stdin (avoids shell quoting pain)
+pub fn eval(code: Option<String>, stdin: bool) -> Result<Value> {
+    use std::io::Read;
+
+    // Input validation: mutually exclusive modes
+    if stdin && code.is_some() {
+        return Err(VirtuosoError::Config(
+            "pass SKILL via argument OR --stdin, not both".into(),
+        ));
+    }
+
+    let skill = if stdin {
+        let mut input = String::new();
+        std::io::stdin()
+            .read_to_string(&mut input)
+            .map_err(|e| VirtuosoError::Io(std::io::Error::other(e)))?;
+        if input.trim().is_empty() {
+            return Err(VirtuosoError::Config(
+                "empty SKILL expression from stdin".into(),
+            ));
+        }
+        input
+    } else {
+        let c = code.ok_or_else(|| VirtuosoError::Config("no SKILL expression provided".into()))?;
+        if c.trim().is_empty() {
+            return Err(VirtuosoError::Config("empty SKILL expression".into()));
+        }
+        c
+    };
+
+    // Wrap in progn on its own lines so that:
+    // - Multi-statement inputs work without user adding progn
+    // - Trailing `; comment` doesn't swallow the closing paren
+    // - Embedded newlines flow through unchanged
+    let wrapped = format!("progn(\n{}\n)", skill);
+
+    let client = VirtuosoClient::from_env()?;
+    let result = client.execute_skill(&wrapped, None)?;
+
+    Ok(json!({
+        "status": if result.ok() { "success" } else { "error" },
+        "output": result.output,
+        "errors": result.errors,
+        "warnings": result.warnings,
+        "execution_time": result.execution_time,
+    }))
+}

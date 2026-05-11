@@ -446,3 +446,30 @@ pub fn get_params(inst: &str) -> Result<Value> {
     }
     Ok(json!({"instance": inst, "params": parse_skill_json(&r.output)?}))
 }
+
+/// Polish net labels with cosmetic presets, auto-rotation, or offset repositioning.
+///
+/// preset: "readable" (fontSize 0.125, centerCenter) or "compact" (fontSize 0.0625, centerLeft)
+/// auto_rotate: infer rotation from wire direction
+/// offset: "small" (+5 DBU), "medium" (+10), "large" (+20)
+pub fn polish_label(
+    net: &str,
+    preset: &str,
+    auto_rotate: bool,
+    offset: Option<&str>,
+) -> Result<Value> {
+    let client = VirtuosoClient::from_env()?;
+    let skill = client
+        .schematic
+        .polish_labels(net, preset, auto_rotate, offset);
+    let r = client.execute_skill(&skill, None)?;
+    let labels_updated = r.output_unquoted().parse::<usize>().unwrap_or(0);
+    Ok(json!({
+        "status": if r.skill_ok() { "success" } else { "error" },
+        "net": net,
+        "labels_updated": labels_updated,
+        "preset": preset,
+        "auto_rotate": auto_rotate,
+        "offset": offset,
+    }))
+}

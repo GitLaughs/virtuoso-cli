@@ -166,6 +166,60 @@ impl SchematicOps {
             r#"let((cv inst iterm net) cv = geGetEditCellView() {guard} inst = car(setof(i cv~>instances strcmp(i~>name "{inst_name}")==0)) iterm = car(setof(x inst~>instTerms strcmp(x~>name "{term_name}")==0)) net = dbMakeNet(cv "{net_name}") when(iterm dbConnectToNet(iterm net)))"#
         )
     }
+
+    /// Polish all labels on a net with cosmetic preset, auto-rotation, or offset.
+    ///
+    /// preset: "readable" → fontSize 0.125, just "centerCenter"
+    ///          "compact" → fontSize 0.0625, just "centerLeft"
+    /// auto_rotate: infer rotation from wire bounding box direction
+    /// offset: "small" (+5 DBU), "medium" (+10), "large" (+20) in x or y
+    pub fn polish_labels(
+        &self,
+        net_name: &str,
+        preset: &str,
+        auto_rotate: bool,
+        offset: Option<&str>,
+    ) -> String {
+        let net_name = escape_skill_string(net_name);
+        let font_size = if preset == "compact" {
+            "0.0625"
+        } else {
+            "0.125"
+        };
+        let just = if preset == "compact" {
+            "\"centerLeft\""
+        } else {
+            "\"centerCenter\""
+        };
+        let offset_delta: i64 = match offset {
+            Some("small") => 5,
+            Some("medium") => 10,
+            Some("large") => 20,
+            _ => 0,
+        };
+
+        // Build the optional code blocks as plain strings
+        let rotate_part = if auto_rotate {
+            " when(labels let((bb bbx bby orient) bb=car(labels)~>xy bbx=caar(bb) bby=cadr(bb) orient=if(bbx>10000 \"R90\" if(bbx<-10000 \"R270\" if(bby>10000 \"MY\" \"R0\"))) foreach(l labels l~>orient=orient)))".to_string()
+        } else {
+            String::new()
+        };
+
+        let offset_part = if offset_delta != 0 {
+            format!(" foreach(l labels let((xy) xy=l~>xy l~>xy=list(car(xy)+{offset_delta} cadr(xy)+{offset_delta})))", offset_delta = offset_delta)
+        } else {
+            String::new()
+        };
+
+        format!(
+            "let((cv net labels) cv=geGetEditCellView() net=dbFindNetByName(cv \"{net_name}\") labels=if(net setof(l net~>labels l~>figType==\"label\") nil) foreach(l labels l~>fontSize={fs} l~>justify={just}){rotate}{offset} length(labels))",
+            net_name = net_name,
+            fs = font_size,
+            just = just,
+            rotate = rotate_part,
+            offset = offset_part,
+        )
+    }
 }
 
 #[cfg(test)]

@@ -22,6 +22,8 @@ pub struct Config {
     pub keep_remote_files: bool,
     pub spectre_cmd: String,
     pub spectre_args: Vec<String>,
+    /// Maximum parallel Spectre compute threads (VB_SPECTRE_MAX_WORKERS, default: 8)
+    pub spectre_max_workers: u32,
 }
 
 impl Config {
@@ -86,6 +88,9 @@ impl Config {
             spectre_args: Self::env_with_profile("VB_SPECTRE_ARGS", profile)
                 .map(|v| shlex::split(&v).unwrap_or_default())
                 .unwrap_or_default(),
+            spectre_max_workers: Self::env_with_profile("VB_SPECTRE_MAX_WORKERS", profile)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(8),
         })
     }
 

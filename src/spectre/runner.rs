@@ -24,6 +24,7 @@ pub struct SpectreSimulator {
     pub ssh_runner: Option<SSHRunner>,
     pub remote_work_dir: Option<String>,
     pub keep_remote_files: bool,
+    pub max_workers: u32,
     sink: Arc<dyn JobEventSink>,
 }
 
@@ -59,6 +60,7 @@ impl SpectreSimulator {
             ssh_runner,
             remote_work_dir: None,
             keep_remote_files: cfg.keep_remote_files,
+            max_workers: cfg.spectre_max_workers,
             sink: Arc::new(crate::streaming::NullSink),
         })
     }
@@ -132,7 +134,7 @@ impl SpectreSimulator {
             .arg("-maxw")
             .arg("5")
             .arg("-maxn")
-            .arg("5")
+            .arg(self.max_workers.to_string())
             .arg("+logstatus");
 
         for arg in &self.spectre_args {
@@ -186,10 +188,11 @@ impl SpectreSimulator {
         let spectre_cmd = format!(
             ". /etc/profile 2>/dev/null; . ~/.bash_profile 2>/dev/null; . ~/.bashrc 2>/dev/null; \
              cd {remote_dir} && nohup {cmd} -64 input.scs +escchars +log spectre.out \
-             -format {fmt} -raw raw +lqtimeout 900 -maxw 5 -maxn 5 +logstatus{extra} \
+             -format {fmt} -raw raw +lqtimeout 900 -maxw 5 -maxn {maxn} +logstatus{extra} \
              > /dev/null 2>&1 & echo $!",
             cmd = self.spectre_cmd,
             fmt = self.output_format,
+            maxn = self.max_workers,
         );
 
         // Launch and capture PID
@@ -248,7 +251,7 @@ impl SpectreSimulator {
             .arg("-maxw")
             .arg("5")
             .arg("-maxn")
-            .arg("5")
+            .arg(self.max_workers.to_string())
             .arg("+logstatus");
 
         for arg in &self.spectre_args {
@@ -390,20 +393,17 @@ impl SpectreSimulator {
         let netlist_content = netlist.to_string();
         runner.upload_text(&netlist_content, &format!("{remote_dir}/input.scs"))?;
 
-        let spectre_cmd = if self.spectre_args.is_empty() {
-            format!(
-                "{cmd} -64 input.scs +escchars +log spectre.out -format {fmt} -raw raw +lqtimeout 900 -maxw 5 -maxn 5 +logstatus",
-                cmd = self.spectre_cmd,
-                fmt = self.output_format
-            )
+        let extra = if self.spectre_args.is_empty() {
+            String::new()
         } else {
-            format!(
-                "{cmd} -64 input.scs +escchars +log spectre.out -format {fmt} -raw raw +lqtimeout 900 -maxw 5 -maxn 5 +logstatus {}",
-                self.spectre_args.join(" "),
-                cmd = self.spectre_cmd,
-                fmt = self.output_format
-            )
+            format!(" {}", self.spectre_args.join(" "))
         };
+        let spectre_cmd = format!(
+            "{cmd} -64 input.scs +escchars +log spectre.out -format {fmt} -raw raw +lqtimeout 900 -maxw 5 -maxn {maxn} +logstatus{extra}",
+            cmd = self.spectre_cmd,
+            fmt = self.output_format,
+            maxn = self.max_workers,
+        );
 
         let sim_cmd = format!("cd {remote_dir} && {spectre_cmd}");
         let result = runner.run_command(&sim_cmd, Some(self.timeout * 2))?;

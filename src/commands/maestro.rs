@@ -480,6 +480,311 @@ pub fn get_history_list() -> Result<Value> {
     parse_skill_json(&r.output)
 }
 
+/// Snapshot run artifacts to a local directory (YAML-filtered).
+///
+/// Pulls files from a Maestro run directory matching the filter rules.
+/// Binary waveforms (*.raw, wavedb/) are always excluded.
+///
+/// The built-in filter copies:
+///   - maestro.sdb, active.state (session setup)
+///   - state_from_sdb.xml, state_from_active_state.xml (parsed state)
+///   - state_from_skill.txt (SKILL-probed summary)
+///   - Per-point: *.log, *.rdb, *.msg.db (run-level logs)
+///   - Per-point: netlist/{input.scs, netlist, qpInformation.ils, paramInfo.ils}
+///   - Per-point: psf/{spectre.out, logFile, *.dc, *.ac, *.tran, ...}
+pub fn snapshot(
+    output_dir: &str,
+    session: Option<&str>,
+    history: Option<&str>,
+    filter_path: Option<&str>,
+) -> Result<Value> {
+    use std::fs;
+    use std::path::Path;
+
+    let client = VirtuosoClient::from_env()?;
+
+    // 1. Resolve session and run directory
+    let session_info = snapshot_resolve_session(&client, session)?;
+
+    let session_name = session_info
+        .get("session")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| VirtuosoError::Execution("no session resolved".into()))?;
+
+    let run_dir = session_info
+        .get("run_dir")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| VirtuosoError::Execution("run_dir not found for session".into()))?;
+
+    // 2. Resolve history (default: newest by mtime sort)
+    let history_name = match history {
+        Some(h) => h.to_string(),
+        None => {
+            let skill = client.maestro.get_history_list();
+            let r = client.execute_skill(&skill, None)?;
+            let histories: Vec<String> = parse_skill_json(&r.output)
+                .and_then(|v| {
+                    v.as_array()
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|e| e.as_str().map(String::from))
+                                .collect()
+                        })
+                        .ok_or_else(|| VirtuosoError::Execution("expected array".into()))
+                })
+                .unwrap_or_default();
+            histories
+                .last()
+                .cloned()
+                .unwrap_or_else(|| "Interactive.1".to_string())
+        }
+    };
+
+    // 3. Load filter rules (built-in or custom YAML)
+    #[derive(serde::Deserialize)]
+    #[serde(default)]
+    struct FilterRules {
+        always: Vec<String>,
+        state: Vec<String>,
+        skill_summary: Vec<String>,
+        run_level: Vec<String>,
+        netlist: Vec<String>,
+        psf: Vec<String>,
+        exclude: Vec<String>,
+    }
+
+    impl Default for FilterRules {
+        fn default() -> Self {
+            Self {
+                always: vec!["maestro.sdb".into(), "active.state".into()],
+                state: vec![
+                    "state_from_sdb.xml".into(),
+                    "state_from_active_state.xml".into(),
+                ],
+                skill_summary: vec!["state_from_skill.txt".into()],
+                run_level: vec!["*.log".into(), "*.rdb".into(), "*.msg.db".into()],
+                netlist: vec![
+                    "input.scs".into(),
+                    "netlist".into(),
+                    "qpInformation.ils".into(),
+                    "paramInfo.ils".into(),
+                ],
+                psf: vec!["spectre.out".into(), "logFile".into()],
+                exclude: vec!["*.raw".into(), "*/wavedb/*".into(), "*/psf/*.raw".into()],
+            }
+        }
+    }
+
+    let rules: FilterRules = if let Some(path) = filter_path {
+        let yaml =
+            fs::read_to_string(path).map_err(|e| VirtuosoError::Io(std::io::Error::other(e)))?;
+        serde_yaml::from_str(&yaml).unwrap_or_else(|e| {
+            eprintln!("warning: failed to parse filter YAML: {e}; using defaults");
+            FilterRules::default()
+        })
+    } else {
+        FilterRules::default()
+    };
+
+    // 4. Pattern matching helper
+    fn matches_pattern(filename: &str, patterns: &[String]) -> bool {
+        for p in patterns {
+            if let Some(suffix) = p.strip_prefix('*') {
+                if filename.ends_with(suffix) {
+                    return true;
+                }
+            } else if p.contains('*') {
+                // Simple prefix glob
+                if let Some(star) = p.find('*') {
+                    let prefix = &p[..star];
+                    if filename.starts_with(prefix) {
+                        return true;
+                    }
+                }
+            } else if filename == p {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn matches_any(s: &str, patterns: &[String]) -> bool {
+        patterns.iter().any(|p| {
+            if let Some(suffix) = p.strip_prefix('*') {
+                s.ends_with(suffix)
+            } else if p.contains('*') {
+                if let Some(star) = p.find('*') {
+                    let prefix = &p[..star];
+                    s.starts_with(prefix)
+                } else {
+                    false
+                }
+            } else {
+                s == p
+            }
+        })
+    }
+
+    // 5. Collect files from run directory structure
+    let run_base = Path::new(run_dir);
+    let history_dir = run_base.join(&history_name);
+
+    let mut collected: Vec<(String, String)> = Vec::new(); // (src_path, rel_path)
+
+    // Session-level files
+    for pattern in rules
+        .always
+        .iter()
+        .chain(rules.state.iter())
+        .chain(rules.skill_summary.iter())
+    {
+        let src = run_base.join(pattern);
+        if src.exists() && !matches_any(pattern, &rules.exclude) {
+            collected.push((src.to_string_lossy().to_string(), pattern.clone()));
+        }
+    }
+
+    // Point-level files
+    let pt_dirs: Vec<_> = std::fs::read_dir(&history_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .collect();
+
+    for pt_entry in &pt_dirs {
+        let pt_name = pt_entry.file_name().to_string_lossy().into_owned();
+        let pt_path = pt_entry.path();
+
+        // Run-level logs: <pt>/run/<run_name>/<tb>/*.log etc.
+        let run_dir_inner = pt_path.join("run");
+        if run_dir_inner.exists() {
+            if let Ok(run_dirs) = std::fs::read_dir(&run_dir_inner) {
+                for run_entry in run_dirs.flatten() {
+                    let run_name = run_entry.file_name().to_string_lossy().into_owned();
+                    let tb_dir = run_entry.path();
+                    if tb_dir.is_dir() {
+                        if let Ok(entries) = std::fs::read_dir(&tb_dir) {
+                            for entry in entries.flatten() {
+                                let name = entry.file_name().to_string_lossy().into_owned();
+                                let rel = format!("{}/run/{}/{}", pt_name, run_name, name);
+                                if matches_pattern(&name, &rules.run_level)
+                                    && !matches_any(&rel, &rules.exclude)
+                                {
+                                    collected
+                                        .push((entry.path().to_string_lossy().to_string(), rel));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Netlist files
+        let netlist_dir = pt_path.join("netlist");
+        if netlist_dir.exists() {
+            for net_pattern in &rules.netlist {
+                let src = netlist_dir.join(net_pattern);
+                let rel = format!("{}/netlist/{}", pt_name, net_pattern);
+                if src.exists() && !matches_any(&rel, &rules.exclude) {
+                    collected.push((src.to_string_lossy().to_string(), rel));
+                }
+            }
+        }
+
+        // PSF files
+        let psf_dir = pt_path.join("psf");
+        if psf_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&psf_dir) {
+                for entry in entries.flatten() {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    let rel = format!("{}/psf/{}", pt_name, name);
+                    // Always include spectre.out and logFile
+                    let is_fixed = name == "spectre.out" || name == "logFile";
+                    let matches_psf = matches_pattern(
+                        &name,
+                        &[
+                            "*.dc".into(),
+                            "*.ac".into(),
+                            "*.tran".into(),
+                            "*.noise".into(),
+                            "*.sp".into(),
+                            "*.fb".into(),
+                            "*.ft".into(),
+                            "*.sw".into(),
+                            "*.sh".into(),
+                        ],
+                    );
+                    if (is_fixed || matches_psf) && !matches_any(&rel, &rules.exclude) {
+                        collected.push((entry.path().to_string_lossy().to_string(), rel));
+                    }
+                }
+            }
+        }
+    }
+
+    // 6. Create output directory and copy files
+    let output_path = Path::new(output_dir);
+    fs::create_dir_all(output_path).map_err(|e| VirtuosoError::Io(std::io::Error::other(e)))?;
+
+    let mut copied_count = 0;
+    let mut skipped_count = 0;
+
+    for (src, rel) in &collected {
+        let dst = output_path.join(rel);
+        if let Some(parent) = dst.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        match fs::copy(src, &dst) {
+            Ok(_) => copied_count += 1,
+            Err(_) => skipped_count += 1,
+        }
+    }
+
+    Ok(json!({
+        "status": "success",
+        "session": session_name,
+        "history": history_name,
+        "run_dir": run_dir,
+        "output_dir": output_dir,
+        "files_copied": copied_count,
+        "files_skipped": skipped_count,
+    }))
+}
+
+/// Resolve session name and run_dir from optional session arg.
+fn snapshot_resolve_session(client: &VirtuosoClient, session: Option<&str>) -> Result<Value> {
+    let skill = client.maestro.focused_window_skill();
+    let r = client.execute_skill(&skill, None)?;
+
+    let tokens = parse_skill_list_top_level(&r.output);
+    let dav_session = tokens.get(1).and_then(|t| extract_skill_string_token(t));
+
+    let effective = session.map(String::from).or(dav_session.clone());
+
+    let run_dir = if let Some(ref s) = effective {
+        if Some(s.as_str()) != dav_session.as_deref() {
+            let skill2 = client.maestro.run_dir_skill(s);
+            let r2 = client.execute_skill(&skill2, None)?;
+            r2.output_unquoted().to_string()
+        } else {
+            tokens
+                .get(4)
+                .and_then(|t| extract_skill_string_token(t))
+                .unwrap_or_default()
+        }
+    } else {
+        String::new()
+    };
+
+    Ok(json!({
+        "session": effective,
+        "run_dir": run_dir,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

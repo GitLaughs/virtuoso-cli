@@ -279,7 +279,8 @@ enum SkillCmd {
     /// Execute a SKILL expression across all live sessions concurrently
     #[command(
         long_about = "Run a SKILL expression on every live local session in parallel.\n\n\
-            Each session gets its own connection; results are collected into a JSON array.\n\
+            Each session gets its own connection; results are collected into a JSON array.\
+            \n\
             Exit code is non-zero only when every session fails.\n\n\
             Examples:\n  \
             virtuoso skill broadcast 'getVersion(t)'\n  \
@@ -292,6 +293,30 @@ enum SkillCmd {
         /// Execution timeout in seconds (per session)
         #[arg(long, short, default_value = "30")]
         timeout: u64,
+    },
+
+    /// Execute inline SKILL one-liners (companion to `load` for round-trip checks)
+    #[command(
+        long_about = "Execute inline SKILL expressions — companion to `load` for one-liners.\n\n\
+            Two input modes:\n\
+            \n\
+            virtuoso skill eval 'getCurrentTime()'\n\
+            echo 'expr' | virtuoso skill eval --stdin\n\n\
+            --stdin sidesteps shell quoting for snippets with embedded quotes, parens, or\n\
+            quoted symbols, and is the natural way to feed multi-line SKILL via heredoc.\n\n\
+            Multi-statement input is supported transparently — the expression is wrapped in\n\
+            `progn(...)` before sending, and the value of the last form is returned.\n\n\
+            Output: full VirtuosoResult as JSON (same shape as `exec`).",
+        name = "eval"
+    )]
+    Eval {
+        /// SKILL expression to evaluate (omit when using --stdin)
+        #[arg(default_value = None)]
+        code: Option<String>,
+
+        /// Read the SKILL expression from stdin instead of argv
+        #[arg(long)]
+        stdin: bool,
     },
 }
 
@@ -801,6 +826,22 @@ enum MaestroCmd {
 
     /// List available history runs for the current Maestro session
     HistoryList,
+
+    /// Snapshot run artifacts to a local directory (YAML-filtered)
+    Snapshot {
+        /// Output directory path
+        #[arg(long)]
+        output: String,
+        /// Session name (optional; auto-detects from focused window)
+        #[arg(long)]
+        session: Option<String>,
+        /// History run name (optional; picks newest if omitted)
+        #[arg(long)]
+        history: Option<String>,
+        /// Path to custom filter YAML (optional; uses built-in if omitted)
+        #[arg(long)]
+        filter: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -908,6 +949,22 @@ enum SchematicCmd {
         /// Instance name (e.g. M1)
         #[arg(long)]
         inst: String,
+    },
+
+    /// Polish net labels — cosmetic preset, auto-rotation, or repositioning
+    PolishLabel {
+        /// Net name whose labels to polish
+        #[arg(long)]
+        net: String,
+        /// Preset: "readable" (largest font, center-aligned) or "compact" (smallest font)
+        #[arg(long, default_value = "readable")]
+        preset: String,
+        /// Apply auto-rotation based on wire direction
+        #[arg(long)]
+        auto_rotate: bool,
+        /// Offset in DB units: "small" (+5), "medium" (+10), "large" (+20)
+        #[arg(long)]
+        offset: Option<String>,
     },
 }
 
@@ -1066,6 +1123,7 @@ fn dispatch_skill(cmd: SkillCmd) -> error::Result<serde_json::Value> {
         } => commands::skill::exec(&code, timeout, readonly),
         SkillCmd::Load { file } => commands::skill::load(&file),
         SkillCmd::Broadcast { code, timeout } => commands::skill::broadcast(&code, timeout),
+        SkillCmd::Eval { code, stdin } => commands::skill::eval(code, stdin),
     }
 }
 
@@ -1268,6 +1326,17 @@ fn dispatch_maestro(cmd: MaestroCmd) -> error::Result<serde_json::Value> {
         }
         MaestroCmd::SimMessages { session } => commands::maestro::get_sim_messages(&session),
         MaestroCmd::HistoryList => commands::maestro::get_history_list(),
+        MaestroCmd::Snapshot {
+            output,
+            session,
+            history,
+            filter,
+        } => commands::maestro::snapshot(
+            &output,
+            session.as_deref(),
+            history.as_deref(),
+            filter.as_deref(),
+        ),
     }
 }
 
@@ -1304,6 +1373,12 @@ fn dispatch_schematic(cmd: SchematicCmd) -> error::Result<serde_json::Value> {
         SchematicCmd::ListNets => commands::schematic::list_nets(),
         SchematicCmd::ListPins => commands::schematic::list_pins(),
         SchematicCmd::GetParams { inst } => commands::schematic::get_params(&inst),
+        SchematicCmd::PolishLabel {
+            net,
+            preset,
+            auto_rotate,
+            offset,
+        } => commands::schematic::polish_label(&net, &preset, auto_rotate, offset.as_deref()),
     }
 }
 

@@ -42,6 +42,7 @@ mod config_tests {
             keep_remote_files: false,
             spectre_cmd: "spectre".into(),
             spectre_args: vec![],
+            spectre_max_workers: 8,
         }
     }
 
