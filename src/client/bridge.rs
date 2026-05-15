@@ -11,7 +11,6 @@ use crate::version::VirtuosoVersion;
 use crate::SchematicDiff;
 use crate::SchematicSnapshot;
 use crate::TransactionManager;
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -31,7 +30,6 @@ pub struct VirtuosoClient {
     pub maestro: MaestroOps,
     pub schematic: SchematicOps,
     pub window: WindowOps,
-    cached_version: Cell<Option<VirtuosoVersion>>,
     pub session_id: Option<String>,
     whitelist: EvalstringWhitelist,
     capabilities: CapabilitySet,
@@ -49,7 +47,6 @@ impl VirtuosoClient {
             maestro: MaestroOps,
             schematic: SchematicOps::new(),
             window: WindowOps,
-            cached_version: Cell::new(None),
             session_id: None,
             whitelist: EvalstringWhitelist::default(),
             capabilities: CapabilitySet::default(),
@@ -161,7 +158,6 @@ impl VirtuosoClient {
             maestro: MaestroOps,
             schematic: SchematicOps::new(),
             window: WindowOps,
-            cached_version: Cell::new(None),
             session_id: resolved_session_id,
             whitelist: EvalstringWhitelist::default(),
             capabilities: CapabilitySet::from_env(),
@@ -462,26 +458,13 @@ impl VirtuosoClient {
     }
 
     #[allow(dead_code)]
-    pub fn run_shell_command(&self, cmd: &str) -> Result<VirtuosoResult> {
-        let cmd = escape_skill_string(cmd);
-        let skill = format!(r#"(csh "{cmd}")"#);
-        self.execute_skill(&skill, None)
-    }
-
-    #[allow(dead_code)]
     pub fn tunnel(&self) -> Option<&SSHClient> {
         self.tunnel.as_ref()
     }
 
-    /// Detect and cache the Virtuoso IC version.
-    /// First call queries the daemon; subsequent calls return the cached result.
+    /// Detect the Virtuoso IC version by querying the daemon.
     pub fn version(&self) -> Result<VirtuosoVersion> {
-        if let Some(v) = self.cached_version.get() {
-            return Ok(v);
-        }
-        let v = crate::version::detect_version(self)?;
-        self.cached_version.set(Some(v));
-        Ok(v)
+        crate::version::detect_version(self)
     }
 
     /// Begin a transaction — captures a snapshot of the current cellview.
@@ -567,15 +550,15 @@ fn is_port_open(port: u16) -> bool {
 }
 
 fn check_blocking_skill(code: &str) -> Option<String> {
-    if code.contains("system(") || code.contains("sh(") {
-        let lower = code.to_lowercase();
-        if lower.contains("find /") || lower.contains("find \"/") {
-            return Some(
-                "Blocked: system()/sh() with recursive 'find /' can hang the SKILL daemon. \
-                 Use a specific directory instead (e.g., find /home/...)."
-                    .into(),
-            );
-        }
+    let lower = code.to_lowercase();
+    if (lower.contains("(system") || lower.contains("(sh"))
+        && (lower.contains("find /") || lower.contains("find \"/"))
+    {
+        return Some(
+            "Blocked: system()/sh() with recursive 'find /' can hang the SKILL daemon. \
+             Use a specific directory instead (e.g., find /home/...)."
+                .into(),
+        );
     }
     None
 }
@@ -587,9 +570,24 @@ fn is_stale_sync(payload: &str) -> bool {
 }
 
 pub fn escape_skill_string(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
+    // Escape backslash first, then other special characters
+    let mut result = String::with_capacity(s.len() * 2);
+    for c in s.chars() {
+        match c {
+            '\\' => result.push_str("\\\\"),
+            '"' => result.push_str("\\\""),
+            '\n' => result.push_str("\\n"),
+            '\r' => result.push_str("\\r"),
+            '\t' => result.push_str("\\t"),
+            '\0' => result.push_str("\\000"),
+            c if c.is_control() => {
+                result.push('\\');
+                result.push(c);
+            }
+            c => result.push(c),
+        }
+    }
+    result
 }
 
 /// Build a SKILL expression that fetches `~>slot` fields from each object in
@@ -686,22 +684,23 @@ mod tests {
 
     #[test]
     fn blocking_skill_find_root_is_blocked() {
-        assert!(check_blocking_skill("system(\"find /\")").is_some());
-        assert!(check_blocking_skill("sh(\"find /\")").is_some());
+        // SKILL syntax uses (system "command")
+        assert!(check_blocking_skill("(system \"find /\")").is_some());
+        assert!(check_blocking_skill("(sh \"find /\")").is_some());
     }
 
     #[test]
     fn blocking_skill_find_absolute_path_blocked() {
         // Any system()/sh() with "find /" (absolute path) is blocked, not just root
-        assert!(check_blocking_skill("system(\"find /home/meow\")").is_some());
-        assert!(check_blocking_skill("system(\"find /tmp\")").is_some());
+        assert!(check_blocking_skill("(system \"find /home/meow\")").is_some());
+        assert!(check_blocking_skill("(system \"find /tmp\")").is_some());
     }
 
     #[test]
     fn blocking_skill_find_relative_path_allowed() {
         // Relative paths without "/" don't match "find /"
-        assert!(check_blocking_skill("system(\"find . -name foo\")").is_none());
-        assert!(check_blocking_skill("system(\"find sim -name *.psf\")").is_none());
+        assert!(check_blocking_skill("(system \"find . -name foo\")").is_none());
+        assert!(check_blocking_skill("(system \"find sim -name *.psf\")").is_none());
     }
 
     #[test]

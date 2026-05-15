@@ -28,6 +28,44 @@ pub struct SpectreSimulator {
     sink: Arc<dyn JobEventSink>,
 }
 
+/// Check if simulation output indicates a netlist read-in error.
+/// "Circuit read-in complete" is NORMAL Spectre output.
+/// Only flag actual errors: "error reading" or "read-in failed".
+fn has_readin_error(content: &str) -> bool {
+    let lower = content.to_lowercase();
+    lower.contains("error reading") || lower.contains("read-in failed")
+}
+
+/// Extract specific error messages from simulation log for better diagnostics.
+fn extract_error_messages(content: &str) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        // Match common Spectre error patterns
+        if line.contains("Error") || line.contains("ERROR") || line.contains("error:") {
+            // Skip benign messages
+            if line.contains("No licences")
+                || line.contains("Warning")
+                || line.contains("info:")
+                || line.contains("Reading")
+            {
+                continue;
+            }
+            errors.push(line.to_string());
+        }
+    }
+
+    errors
+}
+
+/// Check if simulation output indicates a license error.
+fn has_license_error(content: &str) -> bool {
+    let lower = content.to_lowercase();
+    (lower.contains("license") || lower.contains("licence"))
+        && (lower.contains("error") || lower.contains("denied") || lower.contains("unavailable"))
+}
+
 /// Completion detection patterns (configurable for i18n).
 /// Default: English "Simulation completed" and Chinese "成就".
 fn is_simulation_complete(content: &str) -> bool {
@@ -346,26 +384,62 @@ impl SpectreSimulator {
         let duration_ms = start_time.elapsed().as_millis() as u64;
         let log_content = fs::read_to_string(&log_path).unwrap_or_default();
 
-        if !status.success() {
+        // Check for read-in errors (but not "Circuit read-in complete" which is normal)
+        let readin_errors = extract_error_messages(&log_content)
+            .into_iter()
+            .filter(|e| !e.contains("Circuit read-in complete"))
+            .collect::<Vec<_>>();
+
+        if !status.success() || has_readin_error(&log_content) {
             self.sink.emit(JobEvent::Failed {
                 job_id: run_id.clone(),
-                error: format!("spectre exited with code {:?}", status.code()),
+                error: format!(
+                    "spectre exited with code {:?} or netlist read error",
+                    status.code()
+                ),
             });
+
+            let errors = if readin_errors.is_empty() {
+                vec![format!("spectre exited with code {:?}", status.code())]
+            } else {
+                readin_errors
+            };
+
             return Ok(SimulationResult {
                 status: ExecutionStatus::Error,
                 tool_version: None,
                 data: HashMap::new(),
-                errors: vec![format!("spectre exited with code {:?}", status.code())],
+                errors,
                 warnings: Vec::new(),
                 metadata: [("log".into(), log_content)].into_iter().collect(),
             });
         }
 
-        let data = if raw_dir.join("psf").exists() || raw_dir.join("results").exists() {
+        // Parse results - try sweep output first, then regular PSF
+        let data = if let Ok(sweep) = crate::spectre::parsers::parse_sweep_psf_directory(&raw_dir) {
+            // Convert sweep data to regular HashMap for compatibility
+            // Each sweep point's data is stored as "point_<N>_<signal>" keys
+            let mut flat: HashMap<String, Vec<f64>> = HashMap::new();
+            let mut indices: Vec<_> = sweep.keys().collect();
+            indices.sort();
+            for &idx in indices {
+                for (signal, values) in &sweep[&idx] {
+                    let key = format!("point_{}_{}", idx, signal);
+                    flat.insert(key, values.clone());
+                }
+            }
+            flat
+        } else if raw_dir.join("psf").exists() || raw_dir.join("results").exists() {
             crate::spectre::parsers::parse_psf_ascii(&raw_dir)?
         } else {
             HashMap::new()
         };
+
+        // Extract warnings (but not the benign "Circuit read-in complete")
+        let warnings: Vec<String> = extract_error_messages(&log_content)
+            .into_iter()
+            .filter(|e| e.contains("Warning") || e.contains("warning") || e.contains("WARNING"))
+            .collect();
 
         self.sink.emit(JobEvent::Completed {
             job_id: run_id.clone(),
@@ -378,7 +452,7 @@ impl SpectreSimulator {
             tool_version: None,
             data,
             errors: Vec::new(),
-            warnings: Vec::new(),
+            warnings,
             metadata: [("log".into(), log_content), ("run_id".into(), run_id)]
                 .into_iter()
                 .collect(),
@@ -417,18 +491,36 @@ impl SpectreSimulator {
         let sim_cmd = format!("cd {remote_dir} && {spectre_cmd}");
         let result = runner.run_command(&sim_cmd, Some(self.timeout * 2))?;
 
-        let mut sim_result = SimulationResult {
-            status: if result.success {
-                ExecutionStatus::Success
+        // Check for read-in errors in remote output
+        let combined_output = format!("{}\n{}", result.stdout, result.stderr);
+        let readin_errors: Vec<String> = extract_error_messages(&combined_output)
+            .into_iter()
+            .filter(|e| !e.contains("Circuit read-in complete"))
+            .collect();
+
+        let has_error = !result.success || has_readin_error(&combined_output);
+        let error_detail = if readin_errors.is_empty() {
+            if !result.success {
+                result.stderr.clone()
             } else {
+                String::new()
+            }
+        } else {
+            readin_errors.join("; ")
+        };
+
+        let mut sim_result = SimulationResult {
+            status: if has_error {
                 ExecutionStatus::Error
+            } else {
+                ExecutionStatus::Success
             },
             tool_version: None,
             data: HashMap::new(),
-            errors: if result.success {
+            errors: if error_detail.is_empty() {
                 Vec::new()
             } else {
-                vec![result.stderr.clone()]
+                vec![error_detail]
             },
             warnings: Vec::new(),
             metadata: [
@@ -439,11 +531,23 @@ impl SpectreSimulator {
             .collect(),
         };
 
-        if result.success {
+        if !has_error {
             let local_raw = self.work_dir.join(&run_id).join("raw");
             runner.download(&format!("{remote_dir}/raw"), local_raw.to_str().unwrap())?;
 
-            if let Ok(data) = crate::spectre::parsers::parse_psf_ascii(&local_raw) {
+            // Try sweep output first, then regular PSF
+            if let Ok(sweep) = crate::spectre::parsers::parse_sweep_psf_directory(&local_raw) {
+                let mut flat: HashMap<String, Vec<f64>> = HashMap::new();
+                let mut indices: Vec<_> = sweep.keys().collect();
+                indices.sort();
+                for &idx in indices {
+                    for (signal, values) in &sweep[&idx] {
+                        let key = format!("point_{}_{}", idx, signal);
+                        flat.insert(key, values.clone());
+                    }
+                }
+                sim_result.data = flat;
+            } else if let Ok(data) = crate::spectre::parsers::parse_psf_ascii(&local_raw) {
                 sim_result.data = data;
             }
         }
@@ -587,4 +691,230 @@ fn extract_percent(s: &str) -> Option<f32> {
         }
     }
     None
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    // === Error detection tests ===
+
+    #[test]
+    fn test_has_readin_error_actual_error() {
+        let content = "Error reading netlist: undefined module 'resistor'\nCircuit read-in failed";
+        assert!(has_readin_error(content));
+    }
+
+    #[test]
+    fn test_has_readin_error_case_insensitive() {
+        let content = "ERROR READING netlist\nread-in failed";
+        assert!(has_readin_error(content));
+    }
+
+    #[test]
+    fn test_has_readin_error_benign_complete() {
+        // "Circuit read-in complete" is NORMAL output, not an error
+        let content = "Circuit read-in complete\nSimulation running...";
+        assert!(!has_readin_error(content));
+    }
+
+    #[test]
+    fn test_has_readin_error_empty() {
+        let content = "";
+        assert!(!has_readin_error(content));
+    }
+
+    #[test]
+    fn test_has_license_error() {
+        let content = "License error: spectre is not available\nERROR: No licences";
+        assert!(has_license_error(content));
+    }
+
+    #[test]
+    fn test_has_license_error_british_spelling() {
+        let content = "Licence error: spectre denied";
+        assert!(has_license_error(content));
+    }
+
+    #[test]
+    fn test_has_license_error_only_word() {
+        // "license" alone without error/denied/unavailable is not an error
+        let content = "Using license file: /path/to/license.dat";
+        assert!(!has_license_error(content));
+    }
+
+    #[test]
+    fn test_extract_error_messages() {
+        let content = "Warning: something unusual\nError: netlist parse failed\ninfo: reading file\nERROR: undefined module";
+        let errors = extract_error_messages(content);
+        assert_eq!(errors.len(), 2);
+        assert!(errors[0].contains("Error: netlist parse failed"));
+        assert!(errors[1].contains("ERROR: undefined module"));
+    }
+
+    #[test]
+    fn test_extract_error_messages_skips_benign() {
+        let content = "Info: Reading design\nNo licences found for abc\nWarning: deprecated syntax";
+        let errors = extract_error_messages(content);
+        assert!(errors.is_empty());
+    }
+
+    #[test]
+    fn test_extract_error_messages_empty() {
+        let content = "";
+        let errors = extract_error_messages(content);
+        assert!(errors.is_empty());
+    }
+
+    // === Completion detection tests ===
+
+    #[test]
+    fn test_is_simulation_complete_english() {
+        let content = "Simulation completed successfully";
+        assert!(is_simulation_complete(content));
+    }
+
+    #[test]
+    fn test_is_simulation_complete_chinese() {
+        let content = "仿真成就完成";
+        assert!(is_simulation_complete(content));
+    }
+
+    #[test]
+    fn test_is_simulation_complete_not_complete() {
+        let content = "Simulation running...\nTime: 1e-6 s";
+        assert!(!is_simulation_complete(content));
+    }
+
+    // === Progress parsing tests ===
+
+    #[test]
+    fn test_parse_time_value_simple() {
+        assert_eq!(parse_time_value("1.5"), Some(1.5));
+        assert_eq!(parse_time_value("0"), Some(0.0));
+    }
+
+    #[test]
+    fn test_parse_time_value_with_units() {
+        // Use approximate comparison for floating point
+        fn approx_eq(a: Option<f64>, b: f64) -> bool {
+            a.map(|v| (v - b).abs() < 1e-12).unwrap_or(false)
+        }
+        assert!(approx_eq(parse_time_value("1.5n"), 1.5e-9));
+        assert!(approx_eq(parse_time_value("100u"), 100e-6));
+        assert!(approx_eq(parse_time_value("2m"), 2e-3));
+        assert!(approx_eq(parse_time_value("3p"), 3e-12));
+        assert!(approx_eq(parse_time_value("1.5f"), 1.5e-15));
+    }
+
+    #[test]
+    fn test_parse_time_value_scientific() {
+        assert_eq!(parse_time_value("1e-9"), Some(1e-9));
+        assert_eq!(parse_time_value("1.5e-6"), Some(1.5e-6));
+    }
+
+    #[test]
+    fn test_parse_time_value_empty() {
+        assert_eq!(parse_time_value(""), Some(0.0));
+        assert_eq!(parse_time_value("   "), Some(0.0));
+    }
+
+    #[test]
+    fn test_parse_time_ratio() {
+        let msg = "t=1200u/3n";
+        let (current, total) = parse_time_ratio(msg).unwrap();
+        assert!((current - 1200e-6).abs() < 1e-12);
+        assert!((total - 3e-9).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_parse_time_ratio_scientific() {
+        let msg = "t=1.2e-6/3e-6";
+        let (current, total) = parse_time_ratio(msg).unwrap();
+        assert!((current - 1.2e-6).abs() < 1e-12);
+        assert!((total - 3e-6).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_parse_time_ratio_no_slash() {
+        let msg = "t=1e-6";
+        assert!(parse_time_ratio(msg).is_none());
+    }
+
+    #[test]
+    fn test_parse_time_ratio_zero_total() {
+        let msg = "t=1u/0";
+        assert!(parse_time_ratio(msg).is_none());
+    }
+
+    #[test]
+    fn test_extract_percent() {
+        assert_eq!(extract_percent("Progress: 45%"), Some(45.0));
+        assert_eq!(extract_percent("Load: 100% complete"), Some(100.0));
+    }
+
+    #[test]
+    fn test_extract_percent_clamped() {
+        assert_eq!(extract_percent("Over: 150% done"), Some(100.0));
+        // Note: negative percentages don't have practical meaning in simulation logs
+        // The function only looks for numeric chars, so "-10%" returns 10 (not -10)
+        assert_eq!(extract_percent("Under: -10% done"), Some(10.0));
+    }
+
+    #[test]
+    fn test_extract_percent_no_percent() {
+        assert!(extract_percent("no percentage here").is_none());
+    }
+
+    #[test]
+    fn test_parse_spectre_progress_time_and_iteration() {
+        let log = r#"Simulation running...
+Time: 1.2e-6 s
+Iteration: 1234
+Loading..."#;
+        let result = parse_spectre_progress(log);
+        assert!(result.is_some());
+        let (percent, msg) = result.unwrap();
+        assert!(msg.contains("1.2e-6"));
+        assert!(msg.contains("1234"));
+        // With t=X/Y parsing, should estimate percentage
+        assert!(percent >= 0.0 && percent <= 100.0);
+    }
+
+    #[test]
+    fn test_parse_spectre_progress_with_ratio() {
+        let log = r#"Time: t=500u/1m
+Iteration: 500"#;
+        let result = parse_spectre_progress(log);
+        assert!(result.is_some());
+        let (percent, _) = result.unwrap();
+        // 500u / 1m = 0.5 = 50%
+        assert!((percent - 50.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_parse_spectre_progress_completed() {
+        let log = "Simulation completed successfully";
+        let result = parse_spectre_progress(log);
+        assert!(result.is_some());
+        let (percent, msg) = result.unwrap();
+        assert_eq!(percent, 100.0);
+        assert_eq!(msg, "completed");
+    }
+
+    #[test]
+    fn test_parse_spectre_progress_progress_keyword() {
+        let log = "Progress: 75%";
+        let result = parse_spectre_progress(log);
+        assert!(result.is_some());
+        let (percent, _) = result.unwrap();
+        assert_eq!(percent, 75.0);
+    }
+
+    #[test]
+    fn test_parse_spectre_progress_no_progress() {
+        let log = "Starting simulation...";
+        let result = parse_spectre_progress(log);
+        assert!(result.is_none());
+    }
 }

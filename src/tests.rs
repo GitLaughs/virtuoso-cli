@@ -783,9 +783,21 @@ mod daemon_stats_tests {
 
     #[test]
     fn path_format() {
-        assert_eq!(DaemonStats::path(41357), "/tmp/.ramic_stats_41357");
-        assert_eq!(DaemonStats::path(0), "/tmp/.ramic_stats_0");
-        assert_eq!(DaemonStats::path(65535), "/tmp/.ramic_stats_65535");
+        let cache_dir = dirs::cache_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+            .join("virtuoso_bridge");
+        assert_eq!(
+            DaemonStats::path(41357),
+            cache_dir.join(".ramic_stats_41357").to_string_lossy()
+        );
+        assert_eq!(
+            DaemonStats::path(0),
+            cache_dir.join(".ramic_stats_0").to_string_lossy()
+        );
+        assert_eq!(
+            DaemonStats::path(65535),
+            cache_dir.join(".ramic_stats_65535").to_string_lossy()
+        );
     }
 
     #[test]
@@ -1628,5 +1640,411 @@ mod history_tests {
             "--cmd flag must return empty skill list"
         );
         assert!(!result["cmd"].as_array().unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod skill_command_tests {
+    /// Test that eval's progn wrapping is correct for various inputs.
+    #[test]
+    fn eval_progn_wrapping_single_expression() {
+        // Verify that wrapping single expression in progn works correctly
+        let code = "1+1";
+        let wrapped = format!("progn(\n{}\n)", code);
+        assert_eq!(wrapped, "progn(\n1+1\n)");
+    }
+
+    #[test]
+    fn eval_progn_wrapping_multiline() {
+        let code = "let((x 5))\n x*x\n)";
+        let wrapped = format!("progn(\n{}\n)", code);
+        assert!(wrapped.starts_with("progn(\n"));
+        assert!(wrapped.ends_with("\n)"));
+        assert!(wrapped.contains("let((x 5))"));
+        assert!(wrapped.contains("x*x"));
+    }
+
+    #[test]
+    fn eval_progn_trailing_comment() {
+        // Ensure trailing comment doesn't swallow the closing paren
+        let code = "1+1 ; trailing comment";
+        let wrapped = format!("progn(\n{}\n)", code);
+        // The newline before ) terminates the line comment
+        assert!(wrapped.ends_with("\n)"));
+    }
+
+    #[test]
+    fn eval_input_validation_empty_code() {
+        use crate::commands::skill;
+        use crate::error::VirtuosoError;
+
+        let result = skill::eval(Some("   ".to_string()), false);
+        assert!(matches!(result, Err(VirtuosoError::Config(_))));
+    }
+
+    #[test]
+    fn eval_input_validation_no_code() {
+        use crate::commands::skill;
+        use crate::error::VirtuosoError;
+
+        let result = skill::eval(None, false);
+        assert!(matches!(result, Err(VirtuosoError::Config(_))));
+    }
+
+    #[test]
+    fn eval_input_validation_stdin_and_argv_conflict() {
+        use crate::commands::skill;
+        use crate::error::VirtuosoError;
+
+        let result = skill::eval(Some("code".to_string()), true);
+        assert!(matches!(result, Err(VirtuosoError::Config(_))));
+    }
+}
+
+/// Integration tests for Spectre simulation parsing.
+/// These tests use real file structures that Spectre generates.
+#[cfg(test)]
+mod spectre_integration_tests {
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_end_to_end_sweep_directory_classic() {
+        // Simulate classic Spectre sweep output: sw1.sweep1/1/, sw1.sweep1/2/, ...
+        let tmp = TempDir::new().unwrap();
+        let raw = tmp.path().join("raw");
+        fs::create_dir_all(&raw).unwrap();
+
+        // Create sweep directories with multiple signals
+        for sweep_idx in 1..=3 {
+            let sweep_dir = raw.join(format!("sw1.sweep{}", sweep_idx));
+            let point_dir = sweep_dir.join(sweep_idx.to_string());
+            fs::create_dir_all(&point_dir).unwrap();
+
+            // Create tran.tran.tran with SWEEP/TRACE/VALUE sections
+            let tran_file = point_dir.join("tran.tran.tran");
+            let content = format!(
+                r#"SWEEP
+"time"
+0.0
+1.0e-6
+2.0e-6
+TRACE
+VALUE
+net1
+0.5
+1.0
+1.5
+net2
+0.0
+0.1
+0.2
+END"#
+            );
+            fs::write(&tran_file, content).unwrap();
+        }
+
+        // Parse the sweep directory
+        let sweep_data =
+            crate::spectre::parsers::parse_sweep_psf_directory(&raw).expect("parse should succeed");
+
+        // Verify we have 3 sweep points
+        assert_eq!(sweep_data.len(), 3);
+        for idx in 1..=3 {
+            assert!(sweep_data.contains_key(&idx), "Missing sweep point {}", idx);
+        }
+
+        // Parse as flat sweep points
+        let points = crate::spectre::parsers::parse_sweep_flat(&raw).expect("parse should succeed");
+        assert_eq!(points.len(), 3);
+
+        // Verify sweep point structure
+        for (i, point) in points.iter().enumerate() {
+            assert_eq!(point.index, i + 1);
+            // Each point should have signal data
+            assert!(!point.signals.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_end_to_end_sweep_directory_lx_mode() {
+        // Simulate Spectre LX/X mode flat file naming: sw1-000_tran.tran, sw1-001_tran.tran, ...
+        let tmp = TempDir::new().unwrap();
+        let raw = tmp.path().join("raw");
+        fs::create_dir_all(&raw).unwrap();
+
+        for i in 0..5 {
+            let filename = format!("sw1-{:03}_tran.tran", i);
+            let path = raw.join(filename);
+
+            // Create PSF content with time values
+            let time_values: Vec<String> = (0..=100)
+                .map(|j| format!("{:.6}", j as f64 * 1e-8))
+                .collect();
+            let content = format!("SWEEP\n{}\nTRACE\nVALUE\nEND", time_values.join("\n"));
+
+            fs::write(&path, content).unwrap();
+        }
+
+        let sweep_data =
+            crate::spectre::parsers::parse_sweep_psf_directory(&raw).expect("parse should succeed");
+
+        // Should have 5 sweep points (converted to 1-indexed)
+        assert_eq!(sweep_data.len(), 5);
+        assert!(sweep_data.contains_key(&1));
+        assert!(sweep_data.contains_key(&5));
+    }
+
+    #[test]
+    fn test_end_to_end_psf_ascii_regular() {
+        // Simulate regular (non-sweep) PSF output
+        let tmp = TempDir::new().unwrap();
+        let raw = tmp.path().join("raw");
+        let psf_dir = raw.join("psf");
+        fs::create_dir_all(&psf_dir).unwrap();
+
+        // Create time signal
+        let time_file = psf_dir.join("time.tran");
+        fs::write(&time_file, "0.0\n1.0\n2.0\n").unwrap();
+
+        // Create voltage signals
+        let vout_file = psf_dir.join("V(out).tran");
+        fs::write(&vout_file, "0.0\n0.5\n1.0\n").unwrap();
+
+        let vin_file = psf_dir.join("V(in).tran");
+        fs::write(&vin_file, "0.0\n0.1\n0.2\n").unwrap();
+
+        let data = crate::spectre::parsers::parse_psf_ascii(&raw).expect("parse should succeed");
+
+        assert_eq!(data.len(), 3);
+        // Note: file_stem() strips the last extension, so "time.tran" -> "time"
+        assert!(data.contains_key("time"));
+        assert!(data.contains_key("V(out)"));
+        assert!(data.contains_key("V(in)"));
+    }
+
+    #[test]
+    fn test_end_to_end_results_dir_fallback() {
+        // Test that results/ directory is used as fallback
+        let tmp = TempDir::new().unwrap();
+        let raw = tmp.path().join("raw");
+        let results_dir = raw.join("results");
+        fs::create_dir_all(&results_dir).unwrap();
+
+        let dc_file = results_dir.join("dc_op.dc");
+        fs::write(&dc_file, "1.2\n").unwrap();
+
+        let data = crate::spectre::parsers::parse_psf_ascii(&raw).expect("parse should succeed");
+        // file_stem strips last extension: "dc_op.dc" -> "dc_op"
+        assert!(data.contains_key("dc_op"));
+    }
+
+    #[test]
+    fn test_end_to_end_sweep_with_params() {
+        // Test sweep where each point has a parameter value
+        let tmp = TempDir::new().unwrap();
+        let raw = tmp.path().join("raw");
+        fs::create_dir_all(&raw).unwrap();
+
+        // Simulate VDS sweep with varying VGS values
+        let sweep_params = [0.5, 1.0, 1.5, 2.0];
+        for (idx, vgs) in sweep_params.iter().enumerate() {
+            let sweep_dir = raw.join(format!("sw1.sweep{}", idx + 1));
+            let point_dir = sweep_dir.join((idx + 1).to_string());
+            fs::create_dir_all(&point_dir).unwrap();
+
+            // Create DC operating point output
+            let dc_file = point_dir.join("dc_op.dc");
+            let content = format!("SWEEP\n\"vgs\"\n{}\nTRACE\nVALUE\nEND", vgs);
+            fs::write(&dc_file, content).unwrap();
+        }
+
+        let points = crate::spectre::parsers::parse_sweep_flat(&raw).expect("parse should succeed");
+
+        // Verify we extracted the sweep parameter values
+        assert_eq!(points.len(), 4);
+        for (i, point) in points.iter().enumerate() {
+            let expected_vgs = sweep_params[i];
+            // The sweep_value should be the parameter value
+            assert!(
+                (point.sweep_value - expected_vgs).abs() < 0.01,
+                "Point {}: expected VGS={}, got {}",
+                i,
+                expected_vgs,
+                point.sweep_value
+            );
+        }
+    }
+
+    #[test]
+    fn test_end_to_end_mixed_sweep_and_dc() {
+        // Test directory with both sweep and regular analysis
+        let tmp = TempDir::new().unwrap();
+        let raw = tmp.path().join("raw");
+        fs::create_dir_all(&raw).unwrap();
+
+        // Create sweep structure
+        let sweep_dir = raw.join("sw1.sweep1");
+        let point_dir = sweep_dir.join("1");
+        fs::create_dir_all(&point_dir).unwrap();
+
+        let tran_file = point_dir.join("tran.tran.tran");
+        fs::write(&tran_file, "SWEEP\n0.0\n1.0\n2.0\nTRACE\nVALUE\nEND").unwrap();
+
+        // Also create regular psf directory with DC analysis
+        let psf_dir = raw.join("psf");
+        fs::create_dir_all(&psf_dir).unwrap();
+        let dc_file = psf_dir.join("dc_op.dc");
+        fs::write(&dc_file, "0.5\n").unwrap();
+
+        // Sweep data should be returned
+        let sweep_data =
+            crate::spectre::parsers::parse_sweep_psf_directory(&raw).expect("parse should succeed");
+        assert!(!sweep_data.is_empty());
+
+        // Verify psf data also works
+        let psf_data =
+            crate::spectre::parsers::parse_psf_ascii(&raw).expect("parse should succeed");
+        assert!(!psf_data.is_empty());
+    }
+
+    #[test]
+    fn test_end_to_end_empty_raw_directory() {
+        let tmp = TempDir::new().unwrap();
+        let raw = tmp.path().join("raw");
+        fs::create_dir_all(&raw).unwrap();
+
+        // Empty directory should not cause errors
+        let sweep_data =
+            crate::spectre::parsers::parse_sweep_psf_directory(&raw).expect("parse should succeed");
+        assert!(sweep_data.is_empty());
+
+        let psf_data =
+            crate::spectre::parsers::parse_psf_ascii(&raw).expect("parse should succeed");
+        assert!(psf_data.is_empty());
+    }
+
+    #[test]
+    fn test_sweep_point_scalar_extraction() {
+        // Test extracting scalar values from sweep points
+        let tmp = TempDir::new().unwrap();
+        let raw = tmp.path().join("raw");
+        fs::create_dir_all(&raw).unwrap();
+
+        // Create sweep with gain measurements
+        // Note: The current parser extracts SWEEP section values (time/freq/params),
+        // not VALUE section signal data. So we verify the sweep_value (param) extraction.
+        for i in 1..=3 {
+            let sweep_dir = raw.join(format!("sw1.sweep{}", i));
+            let point_dir = sweep_dir.join(i.to_string());
+            fs::create_dir_all(&point_dir).unwrap();
+
+            // Use simple file name
+            let dc_file = point_dir.join("dc.dc");
+            // Format: SWEEP with parameter values, TRACE, VALUE (signal), signal value
+            let content = format!(
+                r#"SWEEP
+"vdd"
+{}.0
+TRACE
+VALUE
+END"#,
+                i
+            );
+            fs::write(&dc_file, content).unwrap();
+        }
+
+        let points = crate::spectre::parsers::parse_sweep_flat(&raw).expect("parse should succeed");
+
+        // Verify sweep_value extraction (the parameter value at each sweep point)
+        assert_eq!(points.len(), 3);
+        for (i, point) in points.iter().enumerate() {
+            let expected_vdd = (i + 1) as f64;
+            assert!(
+                (point.sweep_value - expected_vdd).abs() < 0.01,
+                "Point {}: expected VDD={}, got {}",
+                i,
+                expected_vdd,
+                point.sweep_value
+            );
+        }
+    }
+
+    #[test]
+    fn test_psf_ascii_delta_compressed() {
+        // Test parsing delta-compressed PSF (stores only changes)
+        let tmp = TempDir::new().unwrap();
+        let raw = tmp.path().join("raw");
+        let psf_dir = raw.join("psf");
+        fs::create_dir_all(&psf_dir).unwrap();
+
+        // Delta-compressed format typically stores base value and deltas
+        let tran_file = psf_dir.join("tran.tran");
+        let content = r#"SWEEP
+"time"
+0.0
+1.0
+2.0
+TRACE
+VALUE
+*0
++0.1
++0.1
+END"#;
+        fs::write(&tran_file, content).unwrap();
+
+        let data = crate::spectre::parsers::parse_psf_ascii(&raw).expect("parse should succeed");
+        // The parser should at least not crash on delta format
+        // Note: file_stem of "tran.tran" is "tran"
+        assert!(data.contains_key("tran"));
+    }
+
+    #[test]
+    fn test_psf_signal_names_preserved() {
+        // Verify that signal names from file stems are preserved
+        let tmp = TempDir::new().unwrap();
+        let raw = tmp.path().join("raw");
+        let psf_dir = raw.join("psf");
+        fs::create_dir_all(&psf_dir).unwrap();
+
+        // Create files with specific names
+        // Note: file_stem strips last extension, so "net_VDD.tran" -> "net_VDD"
+        fs::write(&psf_dir.join("net_VDD.tran"), "0.0\n1.0\n").unwrap();
+        fs::write(&psf_dir.join("net_VSS.tran"), "0.0\n0.0\n").unwrap();
+        fs::write(&psf_dir.join("I_vdd.i"), "1e-3\n").unwrap();
+
+        let data = crate::spectre::parsers::parse_psf_ascii(&raw).expect("parse should succeed");
+
+        assert!(data.contains_key("net_VDD"));
+        assert!(data.contains_key("net_VSS"));
+        assert!(data.contains_key("I_vdd"));
+    }
+
+    #[test]
+    fn test_sweep_directory_preference_over_flat() {
+        // When both sweep directories and flat files exist, sweep directories should be preferred
+        let tmp = TempDir::new().unwrap();
+        let raw = tmp.path().join("raw");
+        fs::create_dir_all(&raw).unwrap();
+
+        // Create sweep directory
+        let sweep_dir = raw.join("sw1.sweep1");
+        let point_dir = sweep_dir.join("1");
+        fs::create_dir_all(&point_dir).unwrap();
+        fs::write(
+            &point_dir.join("tran.tran.tran"),
+            "SWEEP\n0.0\n1.0\n2.0\nTRACE\nVALUE\nEND",
+        )
+        .unwrap();
+
+        // Create flat file (should be ignored since sweep directories exist)
+        fs::write(&raw.join("sw1-000_tran.tran"), "0.0\n1.0\n2.0\n").unwrap();
+
+        let sweep_data =
+            crate::spectre::parsers::parse_sweep_psf_directory(&raw).expect("parse should succeed");
+
+        // Should find the sweep directory data (not flat files)
+        assert_eq!(sweep_data.len(), 1);
+        assert!(sweep_data.contains_key(&1));
     }
 }

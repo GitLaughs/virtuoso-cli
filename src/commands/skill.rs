@@ -28,25 +28,33 @@ pub fn broadcast(code: &str, timeout: u64) -> Result<Value> {
         return Err(VirtuosoError::NotFound("no live sessions found".into()));
     }
 
-    let mut results: Vec<Value> = std::thread::scope(|s| {
+    // Collect results preserving original session order (by index)
+    let results: Vec<(usize, Value)> = std::thread::scope(|s| {
         let handles: Vec<_> = sessions
             .iter()
-            .map(|session| {
+            .enumerate()
+            .map(|(idx, session)| {
                 let id = session.id.clone();
                 let port = session.port;
                 s.spawn(move || {
                     let client = VirtuosoClient::new("127.0.0.1", port, timeout);
                     match client.execute_skill(code, Some(timeout)) {
-                        Ok(r) => json!({
-                            "session": id,
-                            "ok": r.skill_ok(),
-                            "output": r.output,
-                        }),
-                        Err(e) => json!({
-                            "session": id,
-                            "ok": false,
-                            "error": e.to_string(),
-                        }),
+                        Ok(r) => (
+                            idx,
+                            json!({
+                                "session": id,
+                                "ok": r.skill_ok(),
+                                "output": r.output,
+                            }),
+                        ),
+                        Err(e) => (
+                            idx,
+                            json!({
+                                "session": id,
+                                "ok": false,
+                                "error": e.to_string(),
+                            }),
+                        ),
                     }
                 })
             })
@@ -55,16 +63,23 @@ pub fn broadcast(code: &str, timeout: u64) -> Result<Value> {
             .into_iter()
             .map(|h| {
                 h.join()
-                    .unwrap_or_else(|_| json!({"ok": false, "error": "thread panicked"}))
+                    .unwrap_or_else(|_| (0, json!({"ok": false, "error": "thread panicked"})))
             })
             .collect()
     });
 
+    // Sort by original index to preserve session list order
+    let mut results: Vec<Value> = results.into_iter().map(|(_, v)| v).collect();
     results.sort_by(|a, b| {
-        a["session"]
-            .as_str()
-            .unwrap_or("")
-            .cmp(b["session"].as_str().unwrap_or(""))
+        let idx_a = sessions
+            .iter()
+            .position(|s| s.id == a["session"].as_str().unwrap_or(""))
+            .unwrap_or(0);
+        let idx_b = sessions
+            .iter()
+            .position(|s| s.id == b["session"].as_str().unwrap_or(""))
+            .unwrap_or(0);
+        idx_a.cmp(&idx_b)
     });
 
     let n_ok = results

@@ -86,8 +86,14 @@ impl Config {
             spectre_cmd: Self::env_with_profile("VB_SPECTRE_CMD", profile)
                 .unwrap_or_else(|| "spectre".into()),
             spectre_args: Self::env_with_profile("VB_SPECTRE_ARGS", profile)
-                .map(|v| shlex::split(&v).unwrap_or_default())
-                .unwrap_or_default(),
+                .map(|v| {
+                    shlex::split(&v).ok_or_else(|| {
+                        VirtuosoError::Config(format!(
+                            "VB_SPECTRE_ARGS contains invalid shell syntax: {v}"
+                        ))
+                    })
+                })
+                .unwrap_or(Ok(Vec::new()))?,
             spectre_max_workers: Self::env_with_profile("VB_SPECTRE_MAX_WORKERS", profile)
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(8),

@@ -5,7 +5,8 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::time::Instant;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use crate::models::RemoteTaskResult;
 
@@ -143,27 +144,55 @@ impl SSHRunner {
     }
 
     fn run_command_inner(&self, command: &str, timeout: Option<u64>) -> Result<RemoteTaskResult> {
-        let _timeout = timeout.unwrap_or(self.timeout);
+        let timeout_secs = Duration::from_secs(timeout.unwrap_or(self.timeout));
         let start = Instant::now();
 
         let mut cmd = self.build_run_cmd();
 
-        let output = cmd
+        let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| VirtuosoError::Ssh(format!("failed to spawn ssh: {e}")))?;
 
-        if let Some(mut stdin) = output.stdin.as_ref() {
+        if let Some(stdin) = child.stdin.as_mut() {
             stdin
                 .write_all(command.as_bytes())
                 .map_err(|e| VirtuosoError::Ssh(format!("failed to write command: {e}")))?;
         }
 
-        let output = output
-            .wait_with_output()
-            .map_err(|e| VirtuosoError::Ssh(format!("ssh failed: {e}")))?;
+        // Wait for process completion with timeout using a thread
+        let child_pid = child.id();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let result = child.wait_with_output();
+            let _ = tx.send(result);
+        });
+
+        let output = match rx.recv_timeout(timeout_secs) {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => {
+                return Err(VirtuosoError::Ssh(format!("ssh failed: {e}")));
+            }
+            Err(_) => {
+                // Timeout - kill the process by PID
+                #[cfg(unix)]
+                {
+                    let _ = Command::new("kill")
+                        .arg("-9")
+                        .arg(child_pid.to_string())
+                        .status();
+                }
+                #[cfg(not(unix))]
+                {
+                    let _ = Command::new("taskkill")
+                        .args(["/F", "/PID", &child_pid.to_string()])
+                        .status();
+                }
+                return Err(VirtuosoError::Timeout(timeout_secs.as_secs()));
+            }
+        };
 
         let elapsed = start.elapsed().as_secs_f64();
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();

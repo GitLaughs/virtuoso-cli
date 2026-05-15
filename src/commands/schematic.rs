@@ -6,6 +6,7 @@ use crate::client::editor::SchematicEditor;
 use crate::error::{Result, VirtuosoError};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tempfile;
 
 /// Cadence symbol orientation. Exactly the 8 values SKILL accepts.
 #[derive(Debug, Clone, Copy, Deserialize, clap::ValueEnum)]
@@ -308,13 +309,21 @@ pub fn build(spec_path: &str) -> Result<Value> {
         }
 
         // Load the RB_connectTerminal helper procedure
-        let helper_path = "/tmp/rb_schematic_helper.il";
+        let helper_file = tempfile::Builder::new()
+            .prefix("rb_schematic_helper_")
+            .suffix(".il")
+            .tempfile()
+            .map_err(|e| VirtuosoError::Config(format!("Cannot create temp helper: {e}")))?;
+        let helper_path = helper_file.path();
         fs::write(
             helper_path,
             include_str!("../../resources/rb_connect_terminal.il"),
         )
         .map_err(|e| VirtuosoError::Config(format!("Cannot write helper: {e}")))?;
-        let r = client.execute_skill(&format!(r#"load("{helper_path}")"#), None)?;
+        let r = client.execute_skill(
+            &format!(r#"load("{path}")"#, path = helper_path.display()),
+            None,
+        )?;
         if !r.skill_ok() {
             return Err(VirtuosoError::Execution(format!(
                 "Failed to load connection helper: {}",
@@ -331,10 +340,18 @@ pub fn build(spec_path: &str) -> Result<Value> {
         }
         lines.push("t)".to_string());
 
-        let script_path = "/tmp/rb_schematic_conn.il";
+        let script_file = tempfile::Builder::new()
+            .prefix("rb_schematic_conn_")
+            .suffix(".il")
+            .tempfile()
+            .map_err(|e| VirtuosoError::Config(format!("Cannot create temp script: {e}")))?;
+        let script_path = script_file.path();
         fs::write(script_path, lines.join("\n"))
             .map_err(|e| VirtuosoError::Config(format!("Cannot write script: {e}")))?;
-        let r = client.execute_skill(&format!(r#"load("{script_path}")"#), None)?;
+        let r = client.execute_skill(
+            &format!(r#"load("{path}")"#, path = script_path.display()),
+            None,
+        )?;
         if !r.skill_ok() {
             return Err(VirtuosoError::Execution(format!(
                 "Failed to create connections: {}",

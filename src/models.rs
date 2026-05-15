@@ -136,8 +136,19 @@ pub struct DaemonStats {
 }
 
 impl DaemonStats {
+    /// Returns the path to the daemon stats file.
+    /// Uses the system cache directory (e.g., ~/.cache/virtuoso_bridge/).
+    fn cache_dir() -> std::path::PathBuf {
+        dirs::cache_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+            .join("virtuoso_bridge")
+    }
+
     pub fn path(port: u16) -> String {
-        format!("/tmp/.ramic_stats_{port}")
+        Self::cache_dir()
+            .join(format!(".ramic_stats_{port}"))
+            .to_string_lossy()
+            .into_owned()
     }
 
     pub fn load(port: u16) -> Option<Self> {
