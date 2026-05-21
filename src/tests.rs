@@ -1270,6 +1270,7 @@ mod output_format_tests {
             error: "not_found".into(),
             message: "sess-x not found".into(),
             suggestion: Some("vcli session list".into()),
+            diagnostic: None,
             retryable: false,
         };
         let json = serde_json::to_string(&e).unwrap();
@@ -1286,6 +1287,7 @@ mod output_format_tests {
             error: "execution_failed".into(),
             message: "failed".into(),
             suggestion: None,
+            diagnostic: None,
             retryable: false,
         };
         let json = serde_json::to_string(&e).unwrap();
@@ -1301,6 +1303,7 @@ mod output_format_tests {
             error: "connection_failed".into(),
             message: "refused".into(),
             suggestion: None,
+            diagnostic: None,
             retryable: true,
         };
         let json = serde_json::to_string(&e).unwrap();

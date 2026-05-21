@@ -270,6 +270,16 @@ impl SweepPoint {
     pub fn get_scalar(&self, signal: &str) -> Option<f64> {
         self.signals.get(signal).and_then(|v| v.last().copied())
     }
+
+    /// Extract a specific value at index from the signal.
+    pub fn get_value_at(&self, signal: &str, index: usize) -> Option<f64> {
+        self.signals.get(signal).and_then(|v| v.get(index).copied())
+    }
+
+    /// Get the number of samples in the sweep.
+    pub fn num_samples(&self) -> usize {
+        self.signals.values().next().map(|v| v.len()).unwrap_or(0)
+    }
 }
 
 /// Parse sweep output and return structured sweep points.

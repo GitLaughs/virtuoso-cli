@@ -31,6 +31,8 @@ pub struct CliError {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggestion: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
     pub retryable: bool,
 }
 
@@ -47,6 +49,9 @@ impl CliError {
                 let _ = writeln!(out, "error: {}", self.message);
                 if let Some(ref suggestion) = self.suggestion {
                     let _ = writeln!(out, "suggestion: {suggestion}");
+                }
+                if let Some(ref diagnostic) = self.diagnostic {
+                    let _ = writeln!(out, "\n{diagnostic}");
                 }
             }
         }

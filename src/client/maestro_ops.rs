@@ -235,6 +235,74 @@ impl MaestroOps {
         r#"let((sess out) sess = asiGetCurrentSession() out = if(sess then sess~>name else "nil"))"#
             .into()
     }
+
+    // =========================================================================
+    // Auto-Detection Helpers (similar to virtuoso-bridge-lite)
+    // =========================================================================
+
+    /// Get the current Maestro session info as a structured SKILL call.
+    /// Returns: (session_name, lib, cell, view) or nil.
+    ///
+    /// Usage:
+    ///   let skill = ops.maestro_session_info();
+    ///   let result = client.execute_skill(&skill)?;
+    pub fn maestro_session_info(&self) -> String {
+        r#"let((sess info) sess = asiGetCurrentSession() info = if(sess list(sess~>name if(sess~>adeSession then sess~>adeSession~>libName else nil) if(sess~>adeSession then sess~>adeSession~>cellName else nil) if(sess~>adeSession then sess~>adeSession~>viewName else nil)) else nil))"#.into()
+    }
+
+    /// Check if a cell exists in a library.
+    /// Returns "exists" if found, nil otherwise.
+    pub fn cell_exists(&self, lib: &str, cell: &str) -> String {
+        let lib = escape_skill_string(lib);
+        let cell = escape_skill_string(cell);
+        format!(r#"when(ddGetObj("{lib}" "{cell}") "exists")"#)
+    }
+
+    /// List all libraries containing cells of a specific view type.
+    /// Useful for auto-detecting which PDK libraries are available.
+    pub fn libs_with_view(&self, view: &str) -> String {
+        let view = escape_skill_string(view);
+        format!(
+            r#"let((libs out sep) libs = ddGetLibList() out = "[" sep = "" foreach(l libs when(member("{view}" l~>cells~>viewName) out = strcat(out sep sprintf(nil "\"%s\"" l~>name)) sep = ",")) strcat(out "]"))"#
+        )
+    }
+
+    /// Get the simulation results directory for the current session.
+    /// Returns nil if no session is active.
+    pub fn results_dir(&self) -> String {
+        r#"let((sess dir) sess = asiGetCurrentSession() dir = if(sess then asiGetResultsDir(sess) else nil) if(dir dir "nil"))"#.into()
+    }
+
+    /// Get all available corner/corner-set names from the Maestro setup.
+    pub fn get_corners(&self) -> String {
+        r#"let((corners out sep) corners = maeGetCorners() out = "[" sep = "" foreach(c corners out = strcat(out sep sprintf(nil "\"%s\"" c)) sep = ",") strcat(out "]"))"#.into()
+    }
+
+    /// Detect PVT corner from simulation results directory or cell name.
+    /// Returns the corner string (e.g., "tt", "ss", "ff") if detectable.
+    pub fn detect_corner_from_path(&self, path: &str) -> String {
+        let path = escape_skill_string(path);
+        format!(
+            r#"let((name corner) name = "{path}" corner = cond(
+                (rexMatchp("tt" name) "tt")
+                (rexMatchp("ss" name) "ss")
+                (rexMatchp("ff" name) "ff")
+                (rexMatchp("snfp" name) "snfp")
+                (rexMatchp("fnfp" name) "fnfp")
+                (rexMatchp("fs" name) "fs")
+                (rexMatchp("sf" name) "sf")
+                (t nil)
+            ) if(corner corner "nil"))"#
+        )
+    }
+
+    /// Get simulation status for a session (running, completed, failed).
+    pub fn get_sim_status(&self, session: &str) -> String {
+        let session = escape_skill_string(session);
+        format!(
+            r#"let((sess status) sess = asiGetSession("{session}") status = if(sess sess~>status else "nil"))"#
+        )
+    }
 }
 
 /// Wrap a SKILL expression that returns a list-of-strings into a JSON array string.
@@ -477,5 +545,34 @@ mod tests {
         let s = ops().save_setup("sess1");
         assert!(s.contains("maeSaveSetup"), "{s}");
         assert!(s.contains("?session"), "{s}");
+    }
+
+    #[test]
+    fn cell_exists() {
+        let s = ops().cell_exists("myLib", "myCell");
+        assert!(s.contains("ddGetObj"), "{s}");
+        assert!(s.contains("\"myLib\""), "{s}");
+        assert!(s.contains("\"myCell\""), "{s}");
+        assert!(s.contains("when"), "{s}");
+    }
+
+    #[test]
+    fn results_dir() {
+        let s = ops().results_dir();
+        assert!(s.contains("asiGetResultsDir"), "{s}");
+    }
+
+    #[test]
+    fn detect_corner_from_path() {
+        let s = ops().detect_corner_from_path("/path/to/tt_netlist");
+        assert!(s.contains("rexMatchp"), "{s}");
+        assert!(s.contains("\"tt\""), "{s}");
+    }
+
+    #[test]
+    fn get_sim_status() {
+        let s = ops().get_sim_status("sess1");
+        assert!(s.contains("asiGetSession"), "{s}");
+        assert!(s.contains("~>status"), "{s}");
     }
 }

@@ -78,7 +78,65 @@ impl VirtuosoError {
             Self::Execution(msg) if msg.ends_with(": nil") || msg.contains("unbound") => {
                 Some("SKILL returned nil — check if a cellview/session is open".into())
             }
+            Self::Execution(msg)
+                if msg.contains("maeGetSetup") || msg.contains("maeGetSession") =>
+            {
+                Some("No ADE session active — open Maestro or run a simulation first".into())
+            }
+            Self::Execution(msg) if msg.contains("ddGetObj") || msg.contains("dbOpen") => {
+                Some("Cellview not found — check lib/cell/view names".into())
+            }
+            Self::Execution(msg) if msg.contains("strmin") || msg.contains("ihdl") => {
+                Some("Import failed — check GDS/Verilog paths and PDK libraries".into())
+            }
             Self::NotFound(_) => Some("Use 'vcli session list' to see active sessions".into()),
+            _ => None,
+        }
+    }
+
+    /// Returns detailed diagnostic info for debugging SKILL failures.
+    /// Includes context like session state, cellview status, etc.
+    pub fn diagnostic_context(&self) -> Option<String> {
+        match self {
+            Self::Execution(msg) => {
+                let mut hints = Vec::new();
+
+                // SKILL nil detection
+                if msg.ends_with(": nil") || msg.contains(" returns nil") {
+                    hints.push("SKILL returned nil — variable or object not found");
+                }
+
+                // Unbound variable
+                if msg.contains("unbound") {
+                    hints.push("Unbound variable — check if object exists before accessing");
+                }
+
+                // mae* function failures (Maestro/ADE related)
+                if msg.contains("maeGetSetup") || msg.contains("maeGetSession") {
+                    hints.push("Run 'vcli maestro list' to check active sessions");
+                }
+
+                // db* function failures (database related)
+                if msg.contains("ddGetObj") || msg.contains("dbOpen") {
+                    hints.push("Use 'vcli window list' to check open cellviews");
+                }
+
+                // Connection/daemon issues
+                if msg.contains("daemon") || msg.contains("port") {
+                    hints.push("Restart Virtuoso daemon: reload the setup script in CIW");
+                }
+
+                // Timeout
+                if msg.contains("timeout") {
+                    hints.push("Increase timeout: --timeout 120 or higher");
+                }
+
+                if hints.is_empty() {
+                    None
+                } else {
+                    Some(format!("Diagnostic hints:\n  • {}", hints.join("\n  • ")))
+                }
+            }
             _ => None,
         }
     }
@@ -88,6 +146,7 @@ impl VirtuosoError {
             error: self.error_type().to_string(),
             message: self.to_string(),
             suggestion: self.suggestion(),
+            diagnostic: self.diagnostic_context(),
             retryable: self.retryable(),
         }
     }
