@@ -13,7 +13,7 @@ const SCH_CV_VAR: &str = "RB_SCH_CV";
 /// errors with a helpful message otherwise.
 fn cv_guard() -> String {
     format!(
-        r#"unless(boundp('{SCH_CV_VAR}) && {SCH_CV_VAR} && dbIsValidObject({SCH_CV_VAR}) error("RB_SCH_CV is not set or invalid — run 'vcli schematic open lib/cell/view' first"))"#
+        r#"unless(boundp('{SCH_CV_VAR}) && {SCH_CV_VAR} error("RB_SCH_CV is not set - run 'vcli schematic open lib/cell/view' first"))"#
     )
 }
 
@@ -87,12 +87,27 @@ impl SchematicOps {
         )
     }
 
-    pub fn create_pin(&self, net_name: &str, _pin_type: &str, origin: (i64, i64)) -> String {
+    pub fn create_pin(&self, net_name: &str, pin_type: &str, origin: (i64, i64)) -> String {
         let net_name = escape_skill_string(net_name);
+        let (pin_master, direction) = match pin_type.to_ascii_lowercase().as_str() {
+            "input" | "in" | "ipin" => ("ipin", "input"),
+            "output" | "out" | "opin" => ("opin", "output"),
+            "inout" | "io" | "iopin" | "inputoutput" => ("iopin", "inputOutput"),
+            _ => ("ipin", "input"),
+        };
+        let pin_master = escape_skill_string(pin_master);
+        let direction = escape_skill_string(direction);
         let (x, y) = origin;
         let guard = cv_guard();
         format!(
-            r#"let((cv net pinInst) {guard} cv = RB_SCH_CV net = dbMakeNet(cv "{net_name}") pinInst = dbCreateInst(cv dbOpenCellViewByType("basic" "ipin" "symbol" nil "r") "PIN_{net_name}" list({x} {y}) "R0" 1) dbCreatePin(net pinInst))"#
+            r#"let((cv master pinInst stubEnd wireObjs wireObj) {guard} cv = RB_SCH_CV master = dbOpenCellViewByType("basic" "{pin_master}" "symbol" nil "r") pinInst = schCreatePin(cv master "{net_name}" "{direction}" "{net_name}" list({x} {y}) "R0") stubEnd = list({x} + 0.45 {y}) wireObjs = schCreateWire(cv "route" "full" list(list({x} {y}) stubEnd) 0 0 0 nil nil) wireObj = car(wireObjs) schCreateWireLabel(cv wireObj stubEnd "{net_name}" "lowerCenter" "R0" "stick" 0.0625 nil) pinInst)"#
+        )
+    }
+
+    pub fn clear_current_cellview(&self) -> String {
+        let guard = cv_guard();
+        format!(
+            r#"let((cv) {guard} cv = RB_SCH_CV foreach(inst cv~>instances dbDeleteObject(inst)) foreach(shape cv~>shapes dbDeleteObject(shape)) foreach(term cv~>terminals dbDeleteObject(term)) foreach(net cv~>nets dbDeleteObject(net)) t)"#
         )
     }
 
@@ -162,14 +177,14 @@ impl SchematicOps {
     }
 
     /// Assign net name to instance terminal.
-    /// Finds the instTerm by name and connects it to a named net via dbConnectToNet.
+    /// Finds the master terminal and creates an instTerm on the named net.
     /// No wire drawing coordinates needed — purely a logical connection.
     pub fn assign_net(&self, inst_name: &str, term_name: &str, net_name: &str) -> String {
         let inst_name = escape_skill_string(inst_name);
         let term_name = escape_skill_string(term_name);
         let net_name = escape_skill_string(net_name);
         format!(
-            r#"let((cv inst iterm net) cv = RB_SCH_CV inst = car(setof(i cv~>instances strcmp(i~>name "{inst_name}")==0)) iterm = car(setof(x inst~>instTerms strcmp(x~>name "{term_name}")==0)) net = dbMakeNet(cv "{net_name}") when(iterm dbConnectToNet(iterm net)))"#
+            r#"let((cv inst iterm masterTerm net) cv = RB_SCH_CV inst = car(setof(i cv~>instances strcmp(i~>name "{inst_name}")==0)) masterTerm = car(setof(x inst~>master~>terminals upperCase(x~>name)==upperCase("{term_name}"))) net = dbMakeNet(cv "{net_name}") iterm = car(setof(x inst~>instTerms upperCase(x~>name)==upperCase("{term_name}"))) when(iterm dbDeleteObject(iterm)) when(masterTerm dbCreateInstTerm(net inst masterTerm)))"#
         )
     }
 }
@@ -200,9 +215,9 @@ mod tests {
     }
 
     #[test]
-    fn assign_net_uses_dbconnect() {
+    fn assign_net_uses_db_create_inst_term() {
         let s = ops().assign_net("M1", "G", "VIN");
-        assert!(s.contains("dbConnectToNet"), "must use dbConnectToNet: {s}");
+        assert!(s.contains("dbCreateInstTerm"), "must create an instTerm on the net: {s}");
         assert!(
             !s.contains("schCreateWire"),
             "must not use schCreateWire: {s}"
@@ -229,20 +244,41 @@ mod tests {
     #[test]
     fn cv_guard_is_injected_in_write_ops() {
         let s = ops().create_wire(&[(0, 0), (10, 10)], "wire", "VDD");
-        assert!(s.contains("dbIsValidObject"), "guard must be present: {s}");
+        assert!(s.contains("boundp('RB_SCH_CV)"), "guard must be present: {s}");
         assert!(s.contains("dbCreateWire"), "{s}");
     }
 
     #[test]
     fn create_wire_label_contains_guard() {
         let s = ops().create_wire_label("GND", (50, 50));
-        assert!(s.contains("dbIsValidObject"), "{s}");
+        assert!(s.contains("boundp('RB_SCH_CV)"), "{s}");
+    }
+
+    #[test]
+    fn create_pin_respects_pin_type() {
+        let s = ops().create_pin("Y", "output", (10, 20));
+        assert!(s.contains("\"opin\""), "output pin must use basic/opin: {s}");
+        assert!(!s.contains("\"ipin\""), "output pin must not use basic/ipin: {s}");
+    }
+
+    #[test]
+    fn create_pin_supports_inout() {
+        let s = ops().create_pin("VDD", "inout", (10, 20));
+        assert!(s.contains("\"iopin\""), "inout pin must use basic/iopin: {s}");
+    }
+
+    #[test]
+    fn clear_current_cellview_deletes_existing_objects() {
+        let s = ops().clear_current_cellview();
+        assert!(s.contains("dbDeleteObject"), "{s}");
+        assert!(s.contains("cv~>instances"), "{s}");
+        assert!(s.contains("cv~>terminals"), "{s}");
     }
 
     #[test]
     fn save_contains_guard() {
         let s = ops().save();
-        assert!(s.contains("dbIsValidObject"), "{s}");
+        assert!(s.contains("boundp('RB_SCH_CV)"), "{s}");
         assert!(s.contains("dbSave"), "{s}");
     }
 }

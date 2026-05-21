@@ -445,8 +445,16 @@ procedure(vcli()
 ; ============================================================================
 
 procedure(_RBAutoStart()
-    RBPython = ""
-    RBDPath = strcat(getShellEnvVar("HOME") "/.cargo/bin/virtuoso-daemon")
+    let((fromEnv cargoPath)
+      RBPython = ""
+      fromEnv = getShellEnvVar("RB_DAEMON_PATH")
+      if(fromEnv && fromEnv != "" then
+        RBDPath = fromEnv
+      else
+        cargoPath = strcat(getShellEnvVar("HOME") "/.cargo/bin/virtuoso-daemon")
+        RBDPath = if(isFile(cargoPath) then cargoPath else RBDPath)
+      )
+    )
     when(boundp('RBIpc) && ipcIsAliveProcess(RBIpc) RBStop())
     vcli()
 )

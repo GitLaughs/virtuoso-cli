@@ -182,6 +182,8 @@ pub struct SpecTarget {
     pub cell: String,
     #[serde(default = "default_view")]
     pub view: String,
+    #[serde(default)]
+    pub replace: bool,
 }
 
 fn default_view() -> String {
@@ -252,6 +254,17 @@ pub fn build(spec_path: &str) -> Result<Value> {
             "Failed to open cellview: {}",
             r.output
         )));
+    }
+
+    if spec.target.replace {
+        let clear_skill = client.schematic.clear_current_cellview();
+        let r = client.execute_skill(&clear_skill, None)?;
+        if !r.skill_ok() {
+            return Err(VirtuosoError::Execution(format!(
+                "Failed to clear cellview before rebuild: {}",
+                r.output
+            )));
+        }
     }
 
     // 2. Place instances + set params

@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.19] - 2026-05-21
+
+### Fixed
+- **IC618 schematic build compatibility** - schematic operations no longer rely
+  on `dbIsValidObject` or `dbConnectToNet`, which are unavailable in the local
+  IC618 flow.
+- **Generated pin direction fidelity** - schematic pins now use `basic/ipin`,
+  `basic/opin`, or `basic/iopin` according to the requested direction.
+- **Reliable terminal wiring** - terminal connection helpers create
+  `dbCreateInstTerm` links and bind wire labels to real wire objects for
+  parameter-driven schematic generation.
+
+### Added
+- **Repeatable schematic rebuild support** - vcli schematic specs can set
+  `target.replace=true` to clear an existing cellview before rebuilding.
+- **Daemon path override** - `RB_DAEMON_PATH` lets automation load a checked-out
+  `virtuoso-daemon` without relying on `~/.cargo/bin`.
+
 ## [0.3.18] - 2026-05-01
 
 ### Added
